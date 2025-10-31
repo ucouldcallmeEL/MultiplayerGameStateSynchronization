@@ -186,3 +186,26 @@ def validate_checksum(header_info, payload):
     """Verify that the CRC32 checksum matches the payload."""
     computed = zlib.crc32(payload) & 0xffffffff
     return computed == header_info["checksum"]
+
+# ==============================================================
+# === Complete Message Builder (for clients) ===
+# ==============================================================
+
+def build_event_message(player_id, action_type, cell_id, timestamp, snapshot_id=0, seq_num=0):
+    """
+    Construct a full EVENT message (header + payload) according to GCP1.0.
+
+    Args:
+        player_id (int): ID of the player sending the event.
+        action_type (int): Type of event/action (e.g., move, claim, etc.)
+        cell_id (int): Grid cell affected.
+        timestamp (int): Client event timestamp in ms since epoch.
+        snapshot_id (int): Snapshot ID reference (default 0 for standalone).
+        seq_num (int): Optional sequence number.
+
+    Returns:
+        bytes: Complete binary message ready to send.
+    """
+    payload = build_event_payload(player_id, action_type, cell_id, timestamp)
+    header = build_header(MSG_EVENT, snapshot_id, seq_num, payload)
+    return header + payload
