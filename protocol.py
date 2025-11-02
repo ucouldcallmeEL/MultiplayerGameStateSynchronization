@@ -188,7 +188,7 @@ def validate_checksum(header_info, payload):
     return computed == header_info["checksum"]
 
 # ==============================================================
-# === Complete Message Builder (for clients) ===
+# === Complete Message Builder (for clients) ====
 # ==============================================================
 
 def build_event_message(player_id, action_type, cell_id, timestamp, snapshot_id=0, seq_num=0):

@@ -127,7 +127,7 @@ def snapshot_loop():
 
 
 # ============================================================
-# === Entry Point ===
+# === Entry Point ====
 # ============================================================
 if __name__ == "__main__":
     recv_thread = threading.Thread(target=receive_loop, daemon=True)

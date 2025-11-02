@@ -3,7 +3,7 @@ import time
 import socket
 from protocol import build_event_message, parse_header, parse_grid_changes, HEADER_SIZE, MSG_SNAPSHOT
 
-# === Configuration ===
+# === Configuration ====
 GRID_SIZE = 8
 CELL_SIZE = 60
 SERVER_IP = "127.0.0.1"   # Change to server IP if remote
