@@ -27,6 +27,9 @@ MSG_INIT = 0x01
 MSG_SNAPSHOT = 0x02
 MSG_EVENT = 0x03
 MSG_GAME_OVER = 0x04
+MSG_LOBBY_STATE = 0x05
+MSG_CLAIM_COLOR = 0x06
+MSG_CLAIM_SUCCESS = 0x07
 
 # ==============================================================
 # === Header Structure ===
@@ -186,3 +189,53 @@ def validate_checksum(header_info, payload):
     """Verify that the CRC32 checksum matches the payload."""
     computed = zlib.crc32(payload) & 0xffffffff
     return computed == header_info["checksum"]
+
+# ==============================================================
+# === Complete Message Builder (for clients) ===
+# ==============================================================
+
+def build_event_message(player_id, action_type, cell_id, timestamp, snapshot_id=0, seq_num=0):
+    """
+    Construct a full EVENT message (header + payload) according to GCP1.0.
+
+    Args:
+        player_id (int): ID of the player sending the event.
+        action_type (int): Type of event/action (e.g., move, claim, etc.)
+        cell_id (int): Grid cell affected.
+        timestamp (int): Client event timestamp in ms since epoch.
+        snapshot_id (int): Snapshot ID reference (default 0 for standalone).
+        seq_num (int): Optional sequence number.
+
+    Returns:
+        bytes: Complete binary message ready to send.
+    """
+    payload = build_event_payload(player_id, action_type, cell_id, timestamp)
+    header = build_header(MSG_EVENT, snapshot_id, seq_num, payload)
+    return header + payload 
+
+def build_init_message():
+    """
+    Constructs a full INIT message (header + empty payload) to announce
+    a client's presence to the server.
+    """
+    payload = b""
+    # We can use 0 for snapshot_id and seq_num
+    header = build_header(MSG_INIT, 0, 0, payload)
+    return header + payload
+
+def build_claim_color_message(player_id):
+    """
+    Constructs a full CLAIM_COLOR message (header + payload) for a client
+    to request a specific player slot.
+    """
+    payload = struct.pack("!B", player_id) # Payload is just the 1-byte player ID
+    header = build_header(MSG_CLAIM_COLOR, payload=payload)
+    return header + payload
+
+def build_claim_success_message(player_id):
+    """
+    Constructs a CLAIM_SUCCESS message for the server to send to a client.
+    """
+    payload = struct.pack("!B", player_id)
+    header = build_header(MSG_CLAIM_SUCCESS, payload=payload)
+    return header + payload
