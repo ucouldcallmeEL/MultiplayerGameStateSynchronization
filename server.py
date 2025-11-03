@@ -41,6 +41,8 @@ TOTAL_CELLS = GRID_SIZE * GRID_SIZE # NEW: Constant for total cells
 grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
 snapshot_id = 0
 seq_num = 0
+# Keep last K=2 snapshot change blobs (flat grid changes) for redundancy in broadcasts
+recent_snapshot_changes = []  # list of bytes, most-recent first
 
 # === Lobby State ===
 player_assignments = { 1: None, 2: None, 3: None, 4: None }
@@ -150,6 +152,9 @@ def handle_claim_color(addr, payload):
 def handle_event_message(addr, header, payload):
     """Client sent an in-game event (e.g., click)."""
     global grid
+    # Track the earliest claim timestamp per cell for fairness
+    if not hasattr(handle_event_message, "cell_earliest_ts"):
+        handle_event_message.cell_earliest_ts = {}
     
     if addr not in game_clients:
         print(f"[WARN] Event from non-game client {addr}. Ignoring.")
@@ -163,6 +168,7 @@ def handle_event_message(addr, header, payload):
 
     player_id = event["player_id"]
     cell_id = event["cell_id"]
+    event_ts = header["timestamp"]
 
     if player_assignments.get(player_id) != addr:
         print(f"[WARN] Addr {addr} tried to send event as P{player_id}. Mismatch.")
@@ -172,17 +178,22 @@ def handle_event_message(addr, header, payload):
     col = cell_id % GRID_SIZE
 
     if 0 <= row < GRID_SIZE and 0 <= col < GRID_SIZE:
-        if grid[row][col] == 0:
-            grid[row][col] = player_id
-            print(f"[EVENT] Player {player_id} claimed cell {cell_id} from {addr}")
-            
-            # NEW: Check for win condition after a successful move
-            winner = check_for_win_condition()
-            if winner:
-                broadcast_game_over(winner)
-                
+        cell_ts_map = handle_event_message.cell_earliest_ts
+        prev_ts = cell_ts_map.get(cell_id)
+
+        # Decide ownership by earliest header timestamp
+        if prev_ts is None or event_ts < prev_ts:
+            cell_ts_map[cell_id] = event_ts
+            if grid[row][col] != player_id:
+                grid[row][col] = player_id
+                print(f"[EVENT] Player {player_id} claimed cell {cell_id} (ts={event_ts}) from {addr}")
+
+                # NEW: Check for win condition after a successful move
+                winner = check_for_win_condition()
+                if winner:
+                    broadcast_game_over(winner)
         else:
-            print(f"[EVENT] Cell {cell_id} already owned.")
+            print(f"[EVENT] Ignored later claim for cell {cell_id} (ts={event_ts} >= chosen {prev_ts})")
     else:
         print(f"[WARN] Invalid cell_id {cell_id} from {addr}")
 
@@ -191,7 +202,7 @@ def handle_event_message(addr, header, payload):
 # === Broadcast Loops ===
 # ============================================================
 def build_snapshot_payload():
-    # ... (This function remains unchanged) ...
+    # Build current snapshot flat grid changes
     flat_changes = b""
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
@@ -199,8 +210,19 @@ def build_snapshot_payload():
             new_owner = grid[r][c]
             flat_changes += build_grid_change(cell_id, new_owner)
 
+    # Snapshot redundancy: include last K=2 previous flat change blobs after current
+    # Clients expecting only one snapshot will read the first GRID_SIZE*GRID_SIZE changes and ignore the rest
+    global recent_snapshot_changes
+    extras = b"".join(recent_snapshot_changes[:2])
+
     num_players = 4 
-    payload = struct.pack("!B", num_players) + flat_changes
+    payload = struct.pack("!B", num_players) + flat_changes + extras
+
+    # Update recent buffer (store most-recent first)
+    recent_snapshot_changes.insert(0, flat_changes)
+    if len(recent_snapshot_changes) > 2:
+        recent_snapshot_changes = recent_snapshot_changes[:2]
+
     return payload
 
 
