@@ -12,10 +12,20 @@ import socket
 import struct
 import threading
 import time
+import csv
+import os
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("[WARN] psutil not available. CPU monitoring disabled.")
 
 from protocol import (
     parse_header,
     parse_event_payload,
+    parse_snapshot_ack_payload,
     build_header,
     build_grid_change,
     build_claim_success_message, 
@@ -25,7 +35,8 @@ from protocol import (
     MSG_LOBBY_STATE,
     MSG_CLAIM_COLOR,
     MSG_CLAIM_SUCCESS,
-    MSG_GAME_OVER,  # NEW: Import Game Over message
+    MSG_GAME_OVER,
+    MSG_SNAPSHOT_ACK,  # Client acknowledgment
     HEADER_SIZE,
 )
 
@@ -48,6 +59,74 @@ recent_snapshot_changes = []  # list of bytes, most-recent first
 player_assignments = { 1: None, 2: None, 3: None, 4: None }
 lobby_clients = set()
 game_clients = set()
+
+# === CSV Logging Setup ===
+csv_file = None
+csv_writer = None
+csv_lock = threading.Lock()
+
+def init_csv_logging():
+    """Initialize CSV logging for metrics."""
+    global csv_file, csv_writer
+    csv_filename = 'metrics.csv'
+    csv_file = open(csv_filename, 'w', newline='')
+    csv_writer = csv.writer(csv_file)
+    # Write header
+    csv_writer.writerow([
+        'server_timestamp_ms',
+        'client_id', 
+        'snapshot_id',
+        'seq_num',
+        'cpu_percent',
+        'recv_time_ms',  # Will be filled when client sends ACK
+        'latency_ms'     # Will be calculated when ACK received
+    ])
+    csv_file.flush()
+    print(f"[METRICS] CSV logging initialized: {csv_filename}")
+
+def log_snapshot_sent(client_id, snapshot_id, seq_num, server_timestamp_ms):
+    """Log when a snapshot is sent to a client."""
+    global csv_writer, csv_lock
+    
+    if csv_writer is None:
+        return
+    
+    # Get CPU usage (non-blocking)
+    cpu_percent = psutil.cpu_percent(interval=None) if PSUTIL_AVAILABLE else 0.0
+    
+    with csv_lock:
+        csv_writer.writerow([
+            server_timestamp_ms,
+            client_id,
+            snapshot_id,
+            seq_num,
+            cpu_percent,
+            '',  # recv_time_ms - will be filled by ACK handler
+            ''   # latency_ms - will be calculated by ACK handler
+        ])
+        csv_file.flush()
+
+def log_snapshot_ack(client_id, snapshot_id, server_timestamp_ms, recv_time_ms):
+    """Log when client acknowledges receiving a snapshot (for latency calculation)."""
+    global csv_writer, csv_lock
+    
+    if csv_writer is None:
+        return
+    
+    latency_ms = recv_time_ms - server_timestamp_ms if recv_time_ms and server_timestamp_ms else ''
+    
+    with csv_lock:
+        # Write a separate row for ACK (or we could update the original row, but CSV is append-only)
+        csv_writer.writerow([
+            server_timestamp_ms,
+            client_id,
+            snapshot_id,
+            '',  # seq_num not needed for ACK
+            '',  # cpu_percent not needed for ACK
+            recv_time_ms,
+            latency_ms
+        ])
+        csv_file.flush()
 
 
 # === UDP Setup ===
@@ -149,6 +228,31 @@ def handle_claim_color(addr, payload):
         print(f"[LOBBY] P{player_id} is already taken. Ignoring claim from {addr}")
 
 
+def handle_snapshot_ack(addr, payload):
+    """Handle client acknowledgment of snapshot receipt."""
+    try:
+        ack_data = parse_snapshot_ack_payload(payload)
+        snapshot_id = ack_data["snapshot_id"]
+        server_timestamp_ms = ack_data["server_timestamp_ms"]
+        recv_time_ms = ack_data["recv_time_ms"]
+        
+        # Find client_id from player_assignments
+        client_id = None
+        for pid, client_addr in player_assignments.items():
+            if client_addr == addr:
+                client_id = pid
+                break
+        
+        if client_id:
+            log_snapshot_ack(client_id, snapshot_id, server_timestamp_ms, recv_time_ms)
+        else:
+            print(f"[WARN] Received ACK from unknown client {addr}")
+    except struct.error:
+        print(f"[WARN] Failed to parse SNAPSHOT_ACK from {addr}")
+    except Exception as e:
+        print(f"[ERROR] Error handling SNAPSHOT_ACK: {e}")
+
+
 def handle_event_message(addr, header, payload):
     """Client sent an in-game event (e.g., click)."""
     global grid
@@ -238,10 +342,26 @@ def game_snapshot_loop():
         payload = build_snapshot_payload()
         header = build_header(MSG_SNAPSHOT, snapshot_id, seq_num, payload)
         packet = header + payload
+        
+        # Parse header to get the server timestamp that was used
+        parsed_header = parse_header(packet)
+        server_timestamp_ms = parsed_header["timestamp"]
 
         for client in list(game_clients):
             try:
                 sock.sendto(packet, client)
+                
+                # Log the snapshot send
+                # Find client_id from player_assignments
+                client_id = None
+                for pid, addr in player_assignments.items():
+                    if addr == client:
+                        client_id = pid
+                        break
+                
+                if client_id:
+                    log_snapshot_sent(client_id, snapshot_id, seq_num, server_timestamp_ms)
+                    
             except Exception as e:
                 print(f"[NETWORK] Error sending to {client}: {e}. Removing.")
                 game_clients.discard(client)
@@ -298,6 +418,9 @@ def receive_loop():
             
             elif header["msg_type"] == MSG_EVENT:
                 handle_event_message(addr, header, payload)
+            
+            elif header["msg_type"] == MSG_SNAPSHOT_ACK:
+                handle_snapshot_ack(addr, payload)
 
         except BlockingIOError:
             time.sleep(0.001)
@@ -317,7 +440,9 @@ def receive_loop():
 # === Entry Point ===
 # ============================================================
 if __name__ == "__main__":
-    # ... (This section remains unchanged) ...
+    # Initialize CSV logging
+    init_csv_logging()
+    
     recv_thread = threading.Thread(target=receive_loop, daemon=True)
     recv_thread.start()
     print("[SERVER] Listening for client messages...")
@@ -335,3 +460,5 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[SERVER] Shutting down.")
+        if csv_file:
+            csv_file.close()

@@ -30,6 +30,7 @@ MSG_GAME_OVER = 0x04
 MSG_LOBBY_STATE = 0x05
 MSG_CLAIM_COLOR = 0x06
 MSG_CLAIM_SUCCESS = 0x07
+MSG_SNAPSHOT_ACK = 0x08  # Client acknowledgment of snapshot receipt
 
 # ==============================================================
 # === Header Structure ===
@@ -239,3 +240,21 @@ def build_claim_success_message(player_id):
     payload = struct.pack("!B", player_id)
     header = build_header(MSG_CLAIM_SUCCESS, payload=payload)
     return header + payload
+
+def build_snapshot_ack_message(snapshot_id, server_timestamp_ms, recv_time_ms):
+    """
+    Constructs a SNAPSHOT_ACK message for the client to send to the server.
+    Contains snapshot_id, server_timestamp, and client receive timestamp.
+    """
+    payload = struct.pack("!IQQ", snapshot_id, server_timestamp_ms, recv_time_ms)
+    header = build_header(MSG_SNAPSHOT_ACK, payload=payload)
+    return header + payload
+
+def parse_snapshot_ack_payload(data):
+    """Parse a SNAPSHOT_ACK message payload."""
+    snapshot_id, server_timestamp_ms, recv_time_ms = struct.unpack("!IQQ", data)
+    return {
+        "snapshot_id": snapshot_id,
+        "server_timestamp_ms": server_timestamp_ms,
+        "recv_time_ms": recv_time_ms
+    }
