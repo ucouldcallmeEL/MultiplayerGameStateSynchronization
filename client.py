@@ -2,19 +2,18 @@ import tkinter as tk
 import time
 import socket
 import struct
-import tkinter.messagebox as messagebox  # NEW: For the winner popup
+import tkinter.messagebox as messagebox
 
 from protocol import (
     build_event_message,
     build_init_message,
-    build_claim_color_message,
+    # --- Removed old imports ---
     parse_header,
     parse_grid_changes,
     HEADER_SIZE,
     MSG_SNAPSHOT,
-    MSG_LOBBY_STATE,
-    MSG_CLAIM_SUCCESS,
-    MSG_GAME_OVER  # NEW: Import Game Over message
+    MSG_JOIN_RESPONSE, # NEW
+    MSG_GAME_OVER
 )
 
 # === Configuration ===
@@ -29,12 +28,11 @@ PLAYER_COLORS = {
     4: "#FF9800",  # Orange
     0: "#FFFFFF",  # Empty
 }
-# NEW: Map IDs to color names for the popup
 PLAYER_NAMES = {
     1: "Green",
     2: "Red",
     3: "Blue",
-    4: "Orange"  # <-- FIXED: Was "4."
+    4: "Orange"
 }
 
 
@@ -54,50 +52,49 @@ class GridClash:
         self.server_addr = (SERVER_IP, SERVER_PORT)
 
         # === GUI Frames ===
-        self.lobby_frame = tk.Frame(root)
+        self.main_menu_frame = tk.Frame(root) # NEW: Main menu frame
         self.game_frame = tk.Frame(root)
-        self.lobby_frame.grid(row=0, column=0, sticky="nsew")
+        
+        self.main_menu_frame.grid(row=0, column=0, sticky="nsew")
         self.game_frame.grid(row=0, column=0, sticky="nsew")
 
-        self.build_lobby_ui()
+        self.build_main_menu_ui() # NEW
         self.build_game_ui()
 
-        self.show_lobby()
-        self.send_init_message()
+        self.show_main_menu() # Start on the main menu
+        
+        # Start polling for network messages
         self.root.after(15, self.network_poll)
 
     # ============================================================
     # === GUI Building ===
     # ============================================================
 
-    def build_lobby_ui(self):
+    def build_main_menu_ui(self):
+        """NEW: Builds the simple 'Find Game' button UI."""
         tk.Label(
-            self.lobby_frame,
-            text="Choose Your Color",
-            font=("Arial", 24)
-        ).grid(row=0, column=0, columnspan=2, pady=20)
+            self.main_menu_frame,
+            text="Grid Clash",
+            font=("Arial", 28)
+        ).pack(pady=(50, 20))
 
-        self.lobby_buttons = {}
-        for i in range(1, 5):
-            btn = tk.Button(
-                self.lobby_frame,
-                text=f"Player {i}",
-                width=15,
-                height=3,
-                bg=PLAYER_COLORS[i],
-                fg="white",
-                font=("Arial", 14),
-                command=lambda p=i: self.on_claim_color(p)
-            )
-            btn.grid(row=i, column=0, columnspan=2, padx=10, pady=10)
-            self.lobby_buttons[i] = btn
+        self.find_game_btn = tk.Button(
+            self.main_menu_frame,
+            text="Find Game",
+            width=20,
+            height=3,
+            font=("Arial", 16),
+            command=self.on_find_game
+        )
+        self.find_game_btn.pack(pady=20)
 
-        self.lobby_status_label = tk.Label(
-            self.lobby_frame,
-            text="Connecting...",
+        self.main_status_label = tk.Label(
+            self.main_menu_frame,
+            text="",
             font=("Arial", 12)
         )
-        self.lobby_status_label.grid(row=5, column=0, columnspan=2, pady=10)
+        self.main_status_label.pack(pady=10)
+
 
     def build_game_ui(self):
         self.canvas = tk.Canvas(
@@ -117,26 +114,28 @@ class GridClash:
         self.game_status_label.grid(row=2, column=0, pady=5)
         self.draw_grid_lines()
 
-        back_btn = tk.Button(
-            self.game_frame,
-            text="< Back to Lobby",
-            command=self.show_lobby
-        )
-        back_btn.grid(row=3, column=0, pady=10)
+        # REMOVED: Back to Lobby button
+        # You could add a "Disconnect" or "Main Menu" button here
+        # that calls self.show_main_menu()
 
-    def show_lobby(self):
+    def show_main_menu(self):
+        """NEW: Shows the main menu and resets state."""
         self.my_player_id = None
-        self.root.title("Grid Clash — Lobby")
+        self.root.title("Grid Clash")
         self.game_frame.grid_remove()
-        self.lobby_frame.grid()
-        self.lobby_status_label.config(text="Select a color to join.")
+        self.main_menu_frame.grid()
+        self.main_status_label.config(text="")
+        self.find_game_btn.config(state="normal")
+        # Reset grid state for when re-joining
+        self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+
 
     def show_game(self):
         self.root.title(f"Grid Clash — Player {self.my_player_id}")
-        self.lobby_frame.grid_remove()
+        self.main_menu_frame.grid_remove() # Hide main menu
         self.game_frame.grid()
         self.game_status_label.config(
-            text=f"You are Player {self.my_player_id}",
+            text=f"You are {PLAYER_NAMES.get(self.my_player_id, 'Unknown')} (Player {self.my_player_id})",
             fg=PLAYER_COLORS[self.my_player_id]
         )
         self.redraw_full_grid()
@@ -145,10 +144,11 @@ class GridClash:
     # === GUI Callbacks ===
     # ============================================================
 
-    def on_claim_color(self, player_id):
-        self.lobby_status_label.config(text=f"Requesting Player {player_id}...")
-        msg = build_claim_color_message(player_id)
-        self.send_message(msg)
+    def on_find_game(self):
+        """NEW: Called when 'Find Game' button is clicked."""
+        self.main_status_label.config(text="Connecting...")
+        self.find_game_btn.config(state="disabled")
+        self.send_init_message()
 
     def on_click(self, event):
         if self.my_player_id is None:
@@ -192,6 +192,7 @@ class GridClash:
     # ============================================================
 
     def send_init_message(self):
+        """Sends the single INIT message to join."""
         print("[NETWORK] Sending INIT message...")
         msg = build_init_message()
         self.send_message(msg)
@@ -225,64 +226,73 @@ class GridClash:
                 header = parse_header(data)
                 payload = data[HEADER_SIZE:]
 
-                if header["msg_type"] == MSG_LOBBY_STATE:
-                    self.handle_lobby_state(payload)
-
-                elif header["msg_type"] == MSG_CLAIM_SUCCESS:
-                    self.handle_claim_success(payload)
+                # NEW: Handle the server's join response
+                if header["msg_type"] == MSG_JOIN_RESPONSE:
+                    self.handle_join_response(payload)
 
                 elif header["msg_type"] == MSG_SNAPSHOT:
                     self.handle_game_snapshot(payload)
 
-                # NEW: Handle the game over message
                 elif header["msg_type"] == MSG_GAME_OVER:
                     self.handle_game_over(payload)
+                
+                # --- Removed LOBBY_STATE and CLAIM_SUCCESS handlers ---
 
-        except BlockingIOError:
+        except OSError:
+            # This is the universal fix.
+            # It catches BlockingIOError, ConnectionResetError,
+            # ConnectionRefusedError, and WinError 10022 (Invalid Argument).
+            # All are non-fatal socket-level errors, so we just pass.
             pass
         except Exception as e:
-            print(f"[NETWORK] recv error: {e}")
+            # This will now only catch *real* application errors,
+            # like a failure in our parse_header function.
+            print(f"[NETWORK] Unhandled application error: {e}")
 
         self.root.after(15, self.network_poll)
-
     # ============================================================
     # === Network Handlers ===
     # ============================================================
+    
+    # --- handle_lobby_state removed ---
+    # --- handle_claim_success removed ---
 
-    def handle_lobby_state(self, payload):
+    def handle_join_response(self, payload):
+        """
+        NEW: We've successfully joined! Server has assigned us an ID
+        and sent us the current grid.
+        Payload: [Assigned_PID (B)] + [Snapshot_Payload (...)]
+        """
         try:
-            p1, p2, p3, p4 = struct.unpack("!BBBB", payload)
-            states = {1: p1, 2: p2, 3: p3, 4: p4}
-
-            for player_id, btn in self.lobby_buttons.items():
-                is_taken = states[player_id] == 1
-
-                if player_id == self.my_player_id:
-                    btn.config(text=f"You (Player {player_id})", state="normal", relief="sunken")
-                else:
-                    btn.config(
-                        text=f"Player {player_id}",
-                        state="disabled" if is_taken else "normal",
-                        relief="raised"
-                    )
-
-            self.lobby_status_label.config(text="Select an available color.")
-
+            self.my_player_id = struct.unpack("!B", payload[:1])[0]
+            grid_snapshot_payload = payload[1:] # The rest is a snapshot
+            
+            print(f"[NETWORK] Server assigned us Player {self.my_player_id}")
+            
+            # This payload is identical to a SNAPSHOT payload
+            # Reuse the handler to parse the grid
+            self.handle_game_snapshot(grid_snapshot_payload)
+            
+            # Now, show the game
+            self.show_game() 
+            
         except Exception as e:
-            print(f"[ERROR] Failed to parse LOBBY_STATE: {e}")
+            print(f"[ERROR] Failed to parse JOIN_RESPONSE: {e}")
+            # Reset UI if join fails
+            self.show_main_menu()
+            self.main_status_label.config(text="Error joining game.")
 
-    def handle_claim_success(self, payload):
-        try:
-            self.my_player_id = struct.unpack("!B", payload)[0]
-            print(f"[NETWORK] Server confirmed our slot: Player {self.my_player_id}")
-            self.show_game()
-        except Exception as e:
-            print(f"[ERROR] Failed to parse CLAIM_SUCCESS: {e}")
 
     def handle_game_snapshot(self, payload):
+        """
+        Handles a game state snapshot.
+        Payload: [Num_Players (B)] + [Grid_Changes (...)]
+        """
         try:
-            # self.latest_snapshot_id = parse_header(payload)["snapshot_id"] # This was a bug, header is already parsed
-
+            # We don't need snapshot_id from header here, but server uses it
+            
+            # The first byte is num_players,
+            # the rest is the grid data blob
             changes_blob = payload[1:]
             expected = GRID_SIZE * GRID_SIZE
             changes = parse_grid_changes(changes_blob, expected)
@@ -302,25 +312,19 @@ class GridClash:
         except Exception as e:
             print(f"[ERROR] Failed to parse SNAPSHOT: {e}")
 
-    # NEW: Handle the game over message
     def handle_game_over(self, payload):
         """Server announced the game is over."""
         try:
             winner_id = struct.unpack("!B", payload)[0]
 
-            # Get the color name, default to "Player X"
             winner_name = PLAYER_NAMES.get(winner_id, f"Player {winner_id}")
             message = f"Game Over!\n\nWinner is {winner_name} (Player {winner_id})!"
 
             print(f"[GAME OVER] {message}")
-
-            # Show a popup box
             messagebox.showinfo("Game Over!", message)
 
-            # The server has reset the game. We must return to the lobby.
-            # Our local grid state is now invalid, so reset it.
-            self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-            self.show_lobby()
+            # Go back to the main menu
+            self.show_main_menu()
 
         except Exception as e:
             print(f"[ERROR] Failed to parse GAME_OVER: {e}")

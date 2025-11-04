@@ -16,8 +16,8 @@ import zlib
 # === Protocol Metadata ===
 # ==============================================================
 
-PROTOCOL_ID = b'GCP1'   # 4-byte ASCII identifier
-VERSION = 1             # Protocol version number
+PROTOCOL_ID = b'GCP1'  # 4-byte ASCII identifier
+VERSION = 1            # Protocol version number
 
 # ==============================================================
 # === Message Type Codes ===
@@ -27,9 +27,10 @@ MSG_INIT = 0x01
 MSG_SNAPSHOT = 0x02
 MSG_EVENT = 0x03
 MSG_GAME_OVER = 0x04
-MSG_LOBBY_STATE = 0x05
-MSG_CLAIM_COLOR = 0x06
-MSG_CLAIM_SUCCESS = 0x07
+MSG_LOBBY_STATE = 0x05        # No longer used by new client/server
+MSG_CLAIM_COLOR = 0x06        # No longer used by new client/server
+MSG_CLAIM_SUCCESS = 0x07      # No longer used by new client/server
+MSG_JOIN_RESPONSE = 0x08      # NEW: Server response to INIT
 
 # ==============================================================
 # === Header Structure ===
@@ -223,6 +224,7 @@ def build_init_message():
     header = build_header(MSG_INIT, 0, 0, payload)
     return header + payload
 
+# --- These are no longer used by the new client/server flow ---
 def build_claim_color_message(player_id):
     """
     Constructs a full CLAIM_COLOR message (header + payload) for a client
