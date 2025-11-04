@@ -48,6 +48,9 @@ MSG_JOIN_RESPONSE = 0x08      # NEW: Server response to INIT
 HEADER_FORMAT = "!4sBBIIQHI"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
+GRID_SIZE = 8
+TOTAL_CELLS = GRID_SIZE * GRID_SIZE
+
 # ==============================================================
 # === Header Construction & Parsing ===
 # ==============================================================
@@ -124,50 +127,89 @@ GRID_CHANGE_FORMAT = "!HB"
 GRID_CHANGE_SIZE = struct.calcsize(GRID_CHANGE_FORMAT)
 
 
-def build_player_state(player_id, x, y):
-    """Pack a single player state entry."""
-    return struct.pack(PLAYER_STATE_FORMAT, player_id, x, y)
+def build_snapshot_message(grid_data, num_players, snapshot_id, seq_num):
+    """
+    Constructs a full SNAPSHOT message.
+    Payload: [num_players (B)] + [grid_data (64B)]
+
+    Args:
+        grid_data (bytes): A 64-byte object representing the grid.
+        num_players (int): Number of players (usually 4).
+    """
+    if len(grid_data) != TOTAL_CELLS:
+        raise ValueError(f"Grid data must be {TOTAL_CELLS} bytes long")
+
+    payload = struct.pack("!B", num_players) + grid_data
+    header = build_header(MSG_SNAPSHOT, snapshot_id, seq_num, payload=payload)
+    return header + payload
 
 
-def parse_player_states(data, count):
-    """Unpack multiple player states."""
-    states = []
-    offset = 0
-    for _ in range(count):
-        chunk = data[offset:offset + PLAYER_STATE_SIZE]
-        pid, x, y = struct.unpack(PLAYER_STATE_FORMAT, chunk)
-        states.append({"player_id": pid, "x": x, "y": y})
-        offset += PLAYER_STATE_SIZE
-    return states
+# --- NEW: Snapshot Payload Parser ---
+def parse_snapshot_payload(payload):
+    """
+    Parses a SNAPSHOT payload.
+    Payload: [num_players (B)] + [grid_data (64B)]
+
+    Returns:
+        tuple: (num_players, grid_owners_list)
+    """
+    # Unpack num_players (1 byte) and grid_data (64 bytes)
+    num_players = payload[0]
+    # The rest of the payload is the grid data
+    grid_owners = payload[1:1 + TOTAL_CELLS]
+
+    if len(grid_owners) != TOTAL_CELLS:
+        raise struct.error("Incomplete snapshot payload")
+
+    # grid_owners is already a bytes object of 64 unsigned chars,
+    # which can be iterated over directly.
+    return num_players, grid_owners
 
 
-def build_grid_change(cell_id, new_owner):
-    """Pack a single grid cell update."""
-    return struct.pack(GRID_CHANGE_FORMAT, cell_id, new_owner)
+def build_join_response_message(player_id, grid_data):
+    """
+    Constructs a full JOIN_RESPONSE message.
+    Payload: [player_id (B)] + [grid_data (64B)]
+
+    Args:
+        player_id (int): The player ID to assign.
+        grid_data (bytes): A 64-byte object representing the grid.
+    """
+    if len(grid_data) != TOTAL_CELLS:
+        raise ValueError(f"Grid data must be {TOTAL_CELLS} bytes long")
+
+    payload = struct.pack("!B", player_id) + grid_data
+    header = build_header(MSG_JOIN_RESPONSE, payload=payload)
+    return header + payload
 
 
-def parse_grid_changes(data, count):
-    """Unpack multiple grid changes."""
-    changes = []
-    offset = 0
-    for _ in range(count):
-        chunk = data[offset:offset + GRID_CHANGE_SIZE]
-        cell_id, new_owner = struct.unpack(GRID_CHANGE_FORMAT, chunk)
-        changes.append({"cell_id": cell_id, "new_owner": new_owner})
-        offset += GRID_CHANGE_SIZE
-    return changes
+# --- NEW: Join Response Payload Parser ---
+def parse_join_response_payload(payload):
+    """
+    Parses a JOIN_RESPONSE payload.
+    Payload: [player_id (B)] + [grid_data (64B)]
+
+    Returns:
+        tuple: (player_id, grid_owners_list)
+    """
+    # Unpack player_id (1 byte) and grid_data (64 bytes)
+    player_id = payload[0]
+    grid_owners = payload[1:1 + TOTAL_CELLS]
+
+    if len(grid_owners) != TOTAL_CELLS:
+        raise struct.error("Incomplete join response payload")
+
+    return player_id, grid_owners
 
 
 # ==============================================================
 # === Example Packet Builders ===
 # ==============================================================
 
-def build_event_payload(player_id, action_type, cell_id, timestamp=None):
+def build_event_payload(player_id, action_type, cell_id, timestamp):
     """
     Build an EVENT payload.
     """
-    if timestamp is None:
-        timestamp = int(time.time() * 1000)
     return struct.pack("!BBHQ", player_id, action_type, cell_id, timestamp)
 
 
@@ -222,22 +264,4 @@ def build_init_message():
     payload = b""
     # We can use 0 for snapshot_id and seq_num
     header = build_header(MSG_INIT, 0, 0, payload)
-    return header + payload
-
-# --- These are no longer used by the new client/server flow ---
-def build_claim_color_message(player_id):
-    """
-    Constructs a full CLAIM_COLOR message (header + payload) for a client
-    to request a specific player slot.
-    """
-    payload = struct.pack("!B", player_id) # Payload is just the 1-byte player ID
-    header = build_header(MSG_CLAIM_COLOR, payload=payload)
-    return header + payload
-
-def build_claim_success_message(player_id):
-    """
-    Constructs a CLAIM_SUCCESS message for the server to send to a client.
-    """
-    payload = struct.pack("!B", player_id)
-    header = build_header(MSG_CLAIM_SUCCESS, payload=payload)
     return header + payload

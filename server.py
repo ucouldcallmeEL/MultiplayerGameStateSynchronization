@@ -16,27 +16,28 @@ from protocol import (
     parse_header,
     parse_event_payload,
     build_header,
-    build_grid_change,
-    MSG_SNAPSHOT,
+    build_snapshot_message,
+    build_join_response_message,
     MSG_EVENT,
     MSG_INIT,
-    MSG_JOIN_RESPONSE,
     MSG_GAME_OVER,
     HEADER_SIZE,
+    GRID_SIZE,
+    TOTAL_CELLS
 )
 
 # === Configuration ===
 SERVER_IP = "0.0.0.0"
 SERVER_PORT = 9999
 GAME_TICK_RATE = 1 / 40.0
-GRID_SIZE = 8
-TOTAL_CELLS = GRID_SIZE * GRID_SIZE
+# GRID_SIZE and TOTAL_CELLS are now imported from protocol
 
 # === Game State ===
 grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
 snapshot_id = 0
 seq_num = 0
-recent_snapshot_changes = []
+# recent_snapshot_changes is no longer needed as we send the full grid
+# in a much more efficient format.
 
 # === Lobby State ===
 player_assignments = { 1: None, 2: None, 3: None, 4: None }
@@ -65,35 +66,35 @@ def check_for_win_condition():
     # in handle_event_message is still needed.
     scores = {1: 0, 2: 0, 3: 0, 4: 0}
     filled_cells = 0
-    
+
     for r in range(GRID_SIZE):
         for c in range(GRID_SIZE):
             owner = grid[r][c]
             if owner != 0:
                 scores[owner] += 1
                 filled_cells += 1
-                
+
     if filled_cells == TOTAL_CELLS:
         winner_id = max(scores, key=scores.get)
         max_score = scores[winner_id]
         print(f"[GAME OVER] Grid full. Winner is P{winner_id} with {max_score} tiles.")
         return winner_id
-        
+
     return None
 
 def broadcast_game_over(winner_id):
     global grid, player_assignments, game_clients
-    
+
     print(f"[GAME OVER] Broadcasting win for P{winner_id} and resetting.")
-    
+
     payload = struct.pack("!B", winner_id)
     header = build_header(MSG_GAME_OVER, payload=payload)
     packet = header + payload
-    
+
     # We must lock here to safely copy the client list
     with STATE_LOCK:
         clients_to_notify = list(all_clients)
-    
+
     for client in clients_to_notify:
         try:
             sock.sendto(packet, client)
@@ -103,7 +104,7 @@ def broadcast_game_over(winner_id):
     # Reset the server game state (grid)
     global grid
     grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
-    
+
     # Reset assignments (kick everyone back to lobby)
     # This is a critical section
     with STATE_LOCK:
@@ -114,6 +115,22 @@ def broadcast_game_over(winner_id):
 # ============================================================
 # === Message Handlers ===
 # ============================================================
+
+# --- NEW: Helper function to get grid data as bytes ---
+def get_flat_grid_data_unsafe():
+    """
+    Flattens the 2D grid into a 64-byte string.
+    This avoids using struct.pack in the server logic.
+    MUST be called inside a STATE_LOCK.
+    """
+    flat_bytes = bytearray(TOTAL_CELLS)
+    idx = 0
+    for r in range(GRID_SIZE):
+        for c in range(GRID_SIZE):
+            flat_bytes[idx] = grid[r][c]
+            idx += 1
+    return bytes(flat_bytes)
+
 
 def handle_player_join(addr):
     global player_assignments, game_clients, all_clients
@@ -126,11 +143,13 @@ def handle_player_join(addr):
         for pid, client_addr in player_assignments.items():
             if client_addr == addr:
                 print(f"[NETWORK] Client {addr} (P{pid}) sent INIT again. Resending state.")
-                # Resend their join response (snapshot is built outside lock)
-                snapshot_payload = build_snapshot_payload_unsafe() # We are in a lock
-                join_payload = struct.pack("!B", pid) + snapshot_payload
-                header = build_header(MSG_JOIN_RESPONSE, payload=join_payload)
-                sock.sendto(header + join_payload, addr)
+
+                # --- REFACTORED ---
+                # Build and send the JOIN_RESPONSE using the new protocol function
+                grid_data = get_flat_grid_data_unsafe() # We are in a lock
+                packet = build_join_response_message(pid, grid_data)
+                sock.sendto(packet, addr)
+                # ---
                 return
 
         # Find the first available player_id
@@ -139,21 +158,19 @@ def handle_player_join(addr):
             if client_addr is None:
                 assigned_pid = pid
                 break
-        
+
         if assigned_pid:
             player_assignments[assigned_pid] = addr
-            game_clients.add(addr) 
+            game_clients.add(addr)
             print(f"[LOBBY] Assigned P{assigned_pid} to {addr}")
-            
-            # Build and send the JOIN_RESPONSE
-            snapshot_payload = build_snapshot_payload_unsafe() # We are in a lock
-            join_payload = struct.pack("!B", assigned_pid) + snapshot_payload
-            
-            header = build_header(MSG_JOIN_RESPONSE, payload=join_payload)
-            packet = header + join_payload
-            
+
+            # --- REFACTORED ---
+            # Build and send the JOIN_RESPONSE using the new protocol function
+            grid_data = get_flat_grid_data_unsafe() # We are in a lock
+            packet = build_join_response_message(assigned_pid, grid_data)
             sock.sendto(packet, addr)
-            
+            # ---
+
         else:
             print(f"[LOBBY] Server is full. Ignoring INIT from {addr}")
 
@@ -163,13 +180,13 @@ def handle_event_message(addr, header, payload):
     global grid
     if not hasattr(handle_event_message, "cell_earliest_ts"):
         handle_event_message.cell_earliest_ts = {}
-    
+
     # CRITICAL SECTION: Check player assignments
     with STATE_LOCK:
         if addr not in game_clients:
             print(f"[WARN] Event from non-game client {addr}. Ignoring.")
             return
-            
+
         try:
             event = parse_event_payload(payload)
         except struct.error:
@@ -178,7 +195,7 @@ def handle_event_message(addr, header, payload):
 
         player_id = event["player_id"]
         cell_id = event["cell_id"]
-        event_ts = header["timestamp"]
+        event_ts = header["timestamp"] # Using header timestamp for event ordering
 
         if player_assignments.get(player_id) != addr:
             print(f"[WARN] Addr {addr} tried to send event as P{player_id}. Mismatch.")
@@ -194,7 +211,7 @@ def handle_event_message(addr, header, payload):
 
         if prev_ts is None or event_ts < prev_ts:
             cell_ts_map[cell_id] = event_ts
-            
+
             if grid[row][col] != player_id:
                 grid[row][col] = player_id
                 print(f"[EVENT] Player {player_id} claimed cell {cell_id} (ts={event_ts}) from {addr}")
@@ -203,39 +220,17 @@ def handle_event_message(addr, header, payload):
                 if winner:
                     broadcast_game_over(winner)
         else:
-            # --- START OF CHANGE ---
-            # This 'else' means our event_ts was slower than prev_ts
-            # We can check the grid to see who the *actual* owner is.
             owner_id = grid[row][col]
             if owner_id != 0:
                 print(f"[EVENT] Ignored later claim from P{player_id} for cell {cell_id} (ts={event_ts} >= chosen {prev_ts}). Cell is already owned by Player {owner_id}.")
             else:
-                # This should be rare, but handles a case where the grid hasn't been updated yet
                 print(f"[EVENT] Ignored later claim from P{player_id} for cell {cell_id} (ts={event_ts} >= chosen {prev_ts}). Cell is processing.")
-            # --- END OF CHANGE ---
     else:
         print(f"[WARN] Invalid cell_id {cell_id} from {addr}")
-        
-# NEW: Unsafe version assumes a lock is already held
-def build_snapshot_payload_unsafe():
-    """Builds the payload. MUST be called inside a STATE_LOCK."""
-    global recent_snapshot_changes
-    flat_changes = b""
-    for r in range(GRID_SIZE):
-        for c in range(GRID_SIZE):
-            cell_id = r * GRID_SIZE + c
-            new_owner = grid[r][c]
-            flat_changes += build_grid_change(cell_id, new_owner)
 
-    extras = b"".join(recent_snapshot_changes[:2])
-    num_players = 4
-    payload = struct.pack("!B", num_players) + flat_changes + extras
-
-    recent_snapshot_changes.insert(0, flat_changes)
-    if len(recent_snapshot_changes) > 2:
-        recent_snapshot_changes = recent_snapshot_changes[:2]
-
-    return payload
+# --- REMOVED build_snapshot_payload_unsafe ---
+# This is now handled by get_flat_grid_data_unsafe()
+# and build_snapshot_message() in protocol.py
 
 # ============================================================
 # === Broadcast Loops ===
@@ -243,7 +238,7 @@ def build_snapshot_payload_unsafe():
 
 def game_snapshot_loop():
     global snapshot_id, seq_num
-    
+
     while True:
         # CRITICAL SECTION: Get a copy of the clients
         with STATE_LOCK:
@@ -251,15 +246,20 @@ def game_snapshot_loop():
                 # No one is in the game, just sleep
                 time.sleep(GAME_TICK_RATE)
                 continue
-            
-            # Build payload while locked to prevent 'grid'
-            # from being modified by 'broadcast_game_over'
-            payload = build_snapshot_payload_unsafe()
+
+            # --- REFACTORED ---
+            # Get the raw grid data
+            grid_data = get_flat_grid_data_unsafe()
+            # Get a copy of clients to message
             current_clients = list(game_clients)
-        
+            # ---
+
         # Now send packets *outside* the lock
-        header = build_header(MSG_SNAPSHOT, snapshot_id, seq_num, payload)
-        packet = header + payload
+
+        # --- REFACTORED ---
+        # Build the full packet using the new protocol function
+        packet = build_snapshot_message(grid_data, 4, snapshot_id, seq_num)
+        # ---
 
         clients_to_remove = set()
 
@@ -301,21 +301,19 @@ def receive_loop():
 
             if header["msg_type"] == MSG_INIT:
                 handle_player_join(addr)
-            
+
             elif header["msg_type"] == MSG_EVENT:
                 handle_event_message(addr, header, payload)
 
         except (BlockingIOError, ConnectionResetError, ConnectionRefusedError):
             # These are harmless UDP errors.
-            # We don't have 'addr', so we can't do cleanup here.
-            # The snapshot loop will handle the disconnect.
             time.sleep(0.001)
-            continue # <-- Ensure loop continues
+            continue
 
         except Exception as e:
             # A more serious error, but we still don't want to crash the loop
             print(f"[ERROR] Receive loop caught unhandled error: {e}")
-            continue # <-- CRITICAL: Make sure the loop survives
+            continue
 
 
 # ============================================================
