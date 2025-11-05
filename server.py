@@ -29,6 +29,7 @@ from protocol import (
     build_snapshot_message,
     build_join_response_message,
     MSG_EVENT,
+MSG_SNAPSHOT_ACK,
     MSG_INIT,
     MSG_GAME_OVER,
     HEADER_SIZE,
@@ -363,6 +364,8 @@ def game_snapshot_loop():
         # --- REFACTORED ---
         # Build the full packet using the new protocol function
         packet = build_snapshot_message(grid_data, 4, snapshot_id, seq_num)
+        parsed_header = parse_header(packet)
+        server_timestamp_ms = parsed_header["timestamp"]
         # ---
 
         clients_to_remove = set()
