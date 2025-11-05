@@ -31,6 +31,7 @@ MSG_LOBBY_STATE = 0x05        # No longer used by new client/server
 MSG_CLAIM_COLOR = 0x06        # No longer used by new client/server
 MSG_CLAIM_SUCCESS = 0x07      # No longer used by new client/server
 MSG_JOIN_RESPONSE = 0x08      # NEW: Server response to INIT
+MSG_SNAPSHOT_ACK = 0x09  # Client acknowledgment of snapshot receipt
 
 # ==============================================================
 # === Header Structure ===
@@ -265,3 +266,21 @@ def build_init_message():
     # We can use 0 for snapshot_id and seq_num
     header = build_header(MSG_INIT, 0, 0, payload)
     return header + payload
+
+def build_snapshot_ack_message(snapshot_id, server_timestamp_ms, recv_time_ms):
+    """
+    Constructs a SNAPSHOT_ACK message for the client to send to the server.
+    Contains snapshot_id, server_timestamp, and client receive timestamp.
+    """
+    payload = struct.pack("!IQQ", snapshot_id, server_timestamp_ms, recv_time_ms)
+    header = build_header(MSG_SNAPSHOT_ACK, payload=payload)
+    return header + payload
+
+def parse_snapshot_ack_payload(data):
+    """Parse a SNAPSHOT_ACK message payload."""
+    snapshot_id, server_timestamp_ms, recv_time_ms = struct.unpack("!IQQ", data)
+    return {
+        "snapshot_id": snapshot_id,
+        "server_timestamp_ms": server_timestamp_ms,
+        "recv_time_ms": recv_time_ms
+    }

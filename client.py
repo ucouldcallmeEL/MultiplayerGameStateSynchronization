@@ -2,12 +2,17 @@ import tkinter as tk
 import time
 import socket
 import struct
-import tkinter.messagebox as messagebox
+import csv
+import os
+import sys
+import tkinter.messagebox as messagebox  # NEW: For the winner popup
+
 
 from protocol import (
     build_event_message,
     build_init_message,
     # --- UPDATED Imports ---
+    build_snapshot_ack_message,
     parse_header,
     parse_join_response_payload,
     parse_snapshot_payload,
@@ -16,11 +21,13 @@ from protocol import (
     MSG_SNAPSHOT,
     MSG_JOIN_RESPONSE,  # NEW
     MSG_GAME_OVER,
-    GRID_SIZE  # Import grid size
+    GRID_SIZE, # Import grid size
+    MSG_LOBBY_STATE,
+    MSG_CLAIM_SUCCESS,
+    MSG_SNAPSHOT_ACK
 )
 
 # === Configuration ===
-# GRID_SIZE is now imported
 CELL_SIZE = 60
 SERVER_IP = "127.0.0.1"
 SERVER_PORT = 9999
@@ -40,9 +47,14 @@ PLAYER_NAMES = {
 
 
 class GridClash:
-    def __init__(self, root):
+    def __init__(self, root, auto_join_player_id=None):
         self.root = root
         self.root.title("Grid Clash")
+
+        # === Auto-join configuration ===
+        self.auto_join_player_id = auto_join_player_id
+        self.auto_join_attempted = False
+        self.lobby_state_received = False
 
         # === Game State ===
         self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
@@ -53,6 +65,11 @@ class GridClash:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setblocking(False)
         self.server_addr = (SERVER_IP, SERVER_PORT)
+
+        # === CSV Logging Setup ===
+        self.csv_file = None
+        self.csv_writer = None
+        self.init_csv_logging()
 
         # === GUI Frames ===
         self.main_menu_frame = tk.Frame(root)  # NEW: Main menu frame
@@ -68,6 +85,36 @@ class GridClash:
 
         # Start polling for network messages
         self.root.after(15, self.network_poll)
+
+    def init_csv_logging(self):
+        """Initialize CSV logging for client metrics."""
+        csv_filename = f'client_{os.getpid()}_metrics.csv'
+        self.csv_file = open(csv_filename, 'w', newline='')
+        self.csv_writer = csv.writer(self.csv_file)
+        # Write header
+        self.csv_writer.writerow([
+            'snapshot_id',
+            'server_timestamp_ms',
+            'recv_time_ms',
+            'latency_ms'
+        ])
+        self.csv_file.flush()
+        print(f"[METRICS] Client CSV logging initialized: {csv_filename}")
+
+    def log_snapshot_received(self, snapshot_id, server_timestamp_ms, recv_time_ms):
+        """Log when a snapshot is received."""
+        if self.csv_writer is None:
+            return
+
+        latency_ms = recv_time_ms - server_timestamp_ms if server_timestamp_ms else ''
+
+        self.csv_writer.writerow([
+            snapshot_id,
+            server_timestamp_ms,
+            recv_time_ms,
+            latency_ms
+        ])
+        self.csv_file.flush()
 
     # ============================================================
     # === GUI Building ===
@@ -227,7 +274,7 @@ class GridClash:
                     self.handle_join_response(payload)
 
                 elif header["msg_type"] == MSG_SNAPSHOT:
-                    self.handle_game_snapshot(payload)
+                    self.handle_game_snapshot(header, payload)
 
                 elif header["msg_type"] == MSG_GAME_OVER:
                     self.handle_game_over(payload)
@@ -251,6 +298,84 @@ class GridClash:
         This is called by both handle_join_response and handle_game_snapshot.
         """
         try:
+            p1, p2, p3, p4 = struct.unpack("!BBBB", payload)
+            states = {1: p1, 2: p2, 3: p3, 4: p4}
+            self.lobby_state_received = True
+
+            # Auto-join logic: if auto_join_player_id is set and we haven't joined yet
+            if self.auto_join_player_id and not self.my_player_id and not self.auto_join_attempted:
+                target_id = self.auto_join_player_id
+                if target_id in states and states[target_id] == 0:
+                    # Slot is available, claim it
+                    print(f"[AUTO-JOIN] Automatically claiming Player {target_id}...")
+                    self.auto_join_attempted = True
+                    msg = build_claim_color_message(target_id)
+                    self.send_message(msg)
+                elif self.auto_join_player_id not in states:
+                    print(f"[AUTO-JOIN] Invalid player ID {target_id}, trying first available...")
+                    # Try to find first available slot
+                    for pid in [1, 2, 3, 4]:
+                        if pid in states and states[pid] == 0:
+                            print(f"[AUTO-JOIN] Claiming Player {pid} instead...")
+                            self.auto_join_attempted = True
+                            msg = build_claim_color_message(pid)
+                            self.send_message(msg)
+                            break
+                else:
+                    # Slot is taken, try next available
+                    for pid in [1, 2, 3, 4]:
+                        if pid in states and states[pid] == 0:
+                            print(f"[AUTO-JOIN] Player {target_id} taken, claiming Player {pid} instead...")
+                            self.auto_join_attempted = True
+                            msg = build_claim_color_message(pid)
+                            self.send_message(msg)
+                            break
+
+            for player_id, btn in self.lobby_buttons.items():
+                is_taken = states[player_id] == 1
+
+                if player_id == self.my_player_id:
+                    btn.config(text=f"You (Player {player_id})", state="normal", relief="sunken")
+                else:
+                    btn.config(
+                        text=f"Player {player_id}",
+                        state="disabled" if is_taken else "normal",
+                        relief="raised"
+                    )
+
+            self.lobby_status_label.config(text="Select an available color.")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to parse LOBBY_STATE: {e}")
+
+    def handle_claim_success(self, payload):
+        try:
+            self.my_player_id = struct.unpack("!B", payload)[0]
+            print(f"[NETWORK] Server confirmed our slot: Player {self.my_player_id}")
+            self.show_game()
+        except Exception as e:
+            print(f"[ERROR] Failed to parse CLAIM_SUCCESS: {e}")
+
+    def handle_game_snapshot(self, header, payload):
+        try:
+            snapshot_id = header["snapshot_id"]
+            server_timestamp_ms = header["timestamp"]
+            recv_time_ms = int(time.time() * 1000)
+
+            # Log the snapshot receipt
+            self.log_snapshot_received(snapshot_id, server_timestamp_ms, recv_time_ms)
+
+            # Send ACK back to server
+            ack_msg = build_snapshot_ack_message(snapshot_id, server_timestamp_ms, recv_time_ms)
+            self.send_message(ack_msg)
+
+            changes_blob = payload[1:]
+            expected = GRID_SIZE * GRID_SIZE
+            changes = parse_grid_changes(changes_blob, expected)
+
+            for change in changes:
+                cell_id = change["cell_id"]
+                owner = change["new_owner"]
             for cell_id in range(len(grid_owners)):
                 owner = grid_owners[cell_id]
                 r = cell_id // GRID_SIZE
@@ -325,7 +450,24 @@ class GridClash:
 
 # === Run the game ===
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = GridClash(root)
-    root.mainloop()
+    # Check for command-line argument for auto-join player ID
+    auto_join_id = None
+    if len(sys.argv) > 1:
+        try:
+            auto_join_id = int(sys.argv[1])
+            if auto_join_id < 1 or auto_join_id > 4:
+                print(f"[WARN] Invalid player ID {auto_join_id}, must be 1-4. Ignoring.")
+                auto_join_id = None
+            else:
+                print(f"[AUTO-JOIN] Will auto-join as Player {auto_join_id}")
+        except ValueError:
+            print(f"[WARN] Invalid player ID argument: {sys.argv[1]}. Ignoring.")
 
+    root = tk.Tk()
+    app = GridClash(root, auto_join_player_id=auto_join_id)
+    try:
+        root.mainloop()
+    finally:
+        # Close CSV file on exit
+        if hasattr(app, 'csv_file') and app.csv_file:
+            app.csv_file.close()
