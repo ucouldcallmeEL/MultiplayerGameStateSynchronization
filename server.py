@@ -11,16 +11,24 @@ import socket
 import struct
 import threading
 import time
+import csv
+try:
+    import psutil
+    _PSUTIL = True
+except Exception:
+    _PSUTIL = False
 
 from protocol import (
     parse_header,
     parse_event_payload,
+    parse_snapshot_ack_payload,
     build_header,
     build_snapshot_message,
     build_join_response_message,
     MSG_EVENT,
     MSG_INIT,
     MSG_GAME_OVER,
+    MSG_SNAPSHOT_ACK,
     HEADER_SIZE,
     GRID_SIZE,
     TOTAL_CELLS
@@ -53,6 +61,11 @@ sock.bind((SERVER_IP, SERVER_PORT))
 sock.setblocking(False)
 
 print(f"[SERVER] Running on {SERVER_IP}:{SERVER_PORT}")
+
+# === Metrics CSV ===
+CSV_FILE = open('metrics.csv', 'w', newline='')
+CSV_WRITER = csv.writer(CSV_FILE)
+CSV_WRITER.writerow(['server_timestamp_ms','client_id','snapshot_id','seq_num','cpu_percent','recv_time_ms','latency_ms'])
 
 
 # ============================================================
@@ -256,16 +269,30 @@ def game_snapshot_loop():
 
         # Now send packets *outside* the lock
 
-        # --- REFACTORED ---
         # Build the full packet using the new protocol function
         packet = build_snapshot_message(grid_data, 4, snapshot_id, seq_num)
-        # ---
+
+        # Extract server timestamp from header for logging
+        header_info = parse_header(packet)
+        server_ts = header_info['timestamp']
 
         clients_to_remove = set()
 
         for client in current_clients:
             try:
                 sock.sendto(packet, client)
+
+                # Lookup client_id from assignments for logging
+                client_id = None
+                with STATE_LOCK:
+                    for pid, addr in player_assignments.items():
+                        if addr == client:
+                            client_id = pid
+                            break
+
+                cpu_percent = psutil.cpu_percent(interval=None) if _PSUTIL else ''
+                CSV_WRITER.writerow([server_ts, client_id or '', snapshot_id, seq_num, cpu_percent, '', ''])
+                CSV_FILE.flush()
             except Exception as e:
                 # This client is dead. Mark them for removal.
                 print(f"[NETWORK] Error sending to {client}: {e}. Removing.")
@@ -305,6 +332,24 @@ def receive_loop():
             elif header["msg_type"] == MSG_EVENT:
                 handle_event_message(addr, header, payload)
 
+            elif header["msg_type"] == MSG_SNAPSHOT_ACK:
+                try:
+                    ack = parse_snapshot_ack_payload(payload)
+                    # Resolve client_id
+                    client_id = None
+                    with STATE_LOCK:
+                        for pid, a in player_assignments.items():
+                            if a == addr:
+                                client_id = pid
+                                break
+                    latency = ack['recv_time_ms'] - ack['server_timestamp_ms']
+                    CSV_WRITER.writerow([
+                        ack['server_timestamp_ms'], client_id or '', ack['snapshot_id'], '', '', ack['recv_time_ms'], latency
+                    ])
+                    CSV_FILE.flush()
+                except Exception as e:
+                    print(f"[ERROR] Failed to handle SNAPSHOT_ACK from {addr}: {e}")
+
         except (BlockingIOError, ConnectionResetError, ConnectionRefusedError):
             # These are harmless UDP errors.
             time.sleep(0.001)
@@ -333,3 +378,7 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[SERVER] Shutting down.")
+        try:
+            CSV_FILE.close()
+        except Exception:
+            pass

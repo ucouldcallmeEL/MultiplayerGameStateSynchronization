@@ -31,6 +31,7 @@ MSG_LOBBY_STATE = 0x05        # No longer used by new client/server
 MSG_CLAIM_COLOR = 0x06        # No longer used by new client/server
 MSG_CLAIM_SUCCESS = 0x07      # No longer used by new client/server
 MSG_JOIN_RESPONSE = 0x08      # NEW: Server response to INIT
+MSG_SNAPSHOT_ACK = 0x09       # NEW: Client acknowledgment of snapshot receipt
 
 # ==============================================================
 # === Header Structure ===
@@ -200,6 +201,27 @@ def parse_join_response_payload(payload):
         raise struct.error("Incomplete join response payload")
 
     return player_id, grid_owners
+
+
+# --- NEW: Snapshot ACK builder & parser ---
+def build_snapshot_ack_message(snapshot_id, server_timestamp_ms, recv_time_ms):
+    """
+    Constructs a SNAPSHOT_ACK message for the client to send to the server.
+    Payload: [snapshot_id (I)] [server_timestamp_ms (Q)] [recv_time_ms (Q)]
+    """
+    payload = struct.pack("!IQQ", snapshot_id, server_timestamp_ms, recv_time_ms)
+    header = build_header(MSG_SNAPSHOT_ACK, snapshot_id=snapshot_id, seq_num=0, payload=payload)
+    return header + payload
+
+
+def parse_snapshot_ack_payload(payload):
+    """Parses a SNAPSHOT_ACK payload into its components."""
+    snapshot_id, server_ts, recv_ts = struct.unpack("!IQQ", payload)
+    return {
+        "snapshot_id": snapshot_id,
+        "server_timestamp_ms": server_ts,
+        "recv_time_ms": recv_ts,
+    }
 
 
 # ==============================================================

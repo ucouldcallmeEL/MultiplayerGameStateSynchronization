@@ -2,6 +2,9 @@ import tkinter as tk
 import time
 import socket
 import struct
+import os
+import sys
+import csv
 import tkinter.messagebox as messagebox
 
 from protocol import (
@@ -11,6 +14,7 @@ from protocol import (
     parse_header,
     parse_join_response_payload,
     parse_snapshot_payload,
+    build_snapshot_ack_message,
     # ---
     HEADER_SIZE,
     MSG_SNAPSHOT,
@@ -54,6 +58,11 @@ class GridClash:
         self.sock.setblocking(False)
         self.server_addr = (SERVER_IP, SERVER_PORT)
 
+        # === CSV Logging ===
+        self.csv_file = open(f"client_{os.getpid()}_metrics.csv", 'w', newline='')
+        self.csv_writer = csv.writer(self.csv_file)
+        self.csv_writer.writerow(['snapshot_id','server_timestamp_ms','recv_time_ms','latency_ms'])
+
         # === GUI Frames ===
         self.main_menu_frame = tk.Frame(root)  # NEW: Main menu frame
         self.game_frame = tk.Frame(root)
@@ -64,7 +73,13 @@ class GridClash:
         self.build_main_menu_ui()  # NEW
         self.build_game_ui()
 
-        self.show_main_menu()  # Start on the main menu
+        # Auto-join support: if '--auto' or env AUTO_JOIN is set, immediately send INIT
+        auto = ('--auto' in sys.argv) or (os.getenv('AUTO_JOIN', '').lower() in ('1','true','yes'))
+        if auto:
+            self.show_main_menu()
+            self.on_find_game()
+        else:
+            self.show_main_menu()  # Start on the main menu
 
         # Start polling for network messages
         self.root.after(15, self.network_poll)
@@ -227,7 +242,7 @@ class GridClash:
                     self.handle_join_response(payload)
 
                 elif header["msg_type"] == MSG_SNAPSHOT:
-                    self.handle_game_snapshot(payload)
+                    self.handle_game_snapshot(header, payload)
 
                 elif header["msg_type"] == MSG_GAME_OVER:
                     self.handle_game_over(payload)
@@ -290,13 +305,27 @@ class GridClash:
 
 
     # --- REFACTORED: Now uses new parser and helper ---
-    def handle_game_snapshot(self, payload):
+    def handle_game_snapshot(self, header, payload):
         """
         Handles a game state snapshot.
         """
         try:
-            # Use the new protocol parser
+            # Parse payload
             num_players, grid_owners = parse_snapshot_payload(payload)
+
+            # Log receipt and send ACK
+            snapshot_id = header['snapshot_id']
+            server_ts = header['timestamp']
+            recv_ts = int(time.time() * 1000)
+            latency = recv_ts - server_ts
+            self.csv_writer.writerow([snapshot_id, server_ts, recv_ts, latency])
+            self.csv_file.flush()
+
+            try:
+                ack = build_snapshot_ack_message(snapshot_id, server_ts, recv_ts)
+                self.send_message(ack)
+            except Exception:
+                pass
 
             # Use the new helper to process the grid data
             self.handle_snapshot_data(grid_owners)
@@ -327,5 +356,11 @@ class GridClash:
 if __name__ == "__main__":
     root = tk.Tk()
     app = GridClash(root)
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        try:
+            app.csv_file.close()
+        except Exception:
+            pass
 
