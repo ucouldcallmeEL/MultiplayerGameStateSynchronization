@@ -108,8 +108,8 @@ GridClash uses a custom UDP protocol (GCP1.0) for communication.
 - `MSG_SNAPSHOT (0x02)` - Server broadcasts current game state
 - `MSG_EVENT (0x03)` - Client sends cell claim action
 - `MSG_GAME_OVER (0x04)` - Server announces game completion
-- `MSG_JOIN_RESPONSE (0x08)` - Server assigns player ID and sends initial grid state
-- `MSG_SNAPSHOT_ACK (0x09)` - Client acknowledges snapshot receipt (for latency measurement)
+- `MSG_JOIN_RESPONSE (0x05)` - Server assigns player ID and sends initial grid state
+- `MSG_SNAPSHOT_ACK (0x06)` - Client acknowledges snapshot receipt (for latency measurement)
 
 ### Header Structure (common to all messages)
 

@@ -27,11 +27,8 @@ MSG_INIT = 0x01
 MSG_SNAPSHOT = 0x02
 MSG_EVENT = 0x03
 MSG_GAME_OVER = 0x04
-MSG_LOBBY_STATE = 0x05        # No longer used by new client/server
-MSG_CLAIM_COLOR = 0x06        # No longer used by new client/server
-MSG_CLAIM_SUCCESS = 0x07      # No longer used by new client/server
-MSG_JOIN_RESPONSE = 0x08      # NEW: Server response to INIT
-MSG_SNAPSHOT_ACK = 0x09       # NEW: Client acknowledgment of snapshot receipt
+MSG_JOIN_RESPONSE = 0x05
+MSG_SNAPSHOT_ACK = 0x06
 
 # ==============================================================
 # === Header Structure ===
