@@ -5,27 +5,44 @@ A real-time multiplayer game where up to 4 players compete to claim cells on an 
 ## Table of Contents
 
 1. [Game Overview](#game-overview)
-2. [Protocol Overview](#protocol-overview)
+2. [Project Structure](#project-structure)
 3. [Required Dependencies](#required-dependencies)
 4. [Quick Start](#quick-start)
 5. [Phase 1 Scope](#phase-1-scope)
-6. [Running Automated Tests](#running-automated-tests)
-7. [Verifying Test Results](#verifying-test-results)
-8. [Project Structure](#project-structure)
-9. [Game Rules](#game-rules)
-10. [Technical Details](#technical-details)
-11. [Troubleshooting](#troubleshooting)
+6. [Protocol Overview](#protocol-overview)
+7. [Technical Details](#technical-details)
+8. [Running Automated Tests](#running-automated-tests)
+9. [Verifying Test Results](#verifying-test-results)
+10. [Troubleshooting](#troubleshooting)
 
 ## Game Overview
 
 GridClash is a networked multiplayer game built with Python that demonstrates real-time game state synchronization over UDP. Players click on grid cells to claim them, and the server broadcasts periodic game state snapshots to keep all clients in sync.
 
 **Game Features:**
-- Real-time multiplayer (up to 4 players)
+- Real-time multiplayer
 - Server-authoritative game state
 - Periodic state snapshots over UDP
-- Win condition detection (first to fill the grid wins)
+- Win condition detection
 - Color-coded players (Green, Red, Blue, Orange)
+
+**Game Rules:**
+1. **Objective:** Fill the entire 8×8 grid with your color
+2. **Players:** Up to 4 players can join
+3. **Turns:** Click any empty cell at any time to claim it
+4. **Winner:** First player to claim the grid wins
+5. **Reset:** Game automatically resets after a win
+
+## Project Structure
+
+```
+MultiplayerGameStateSynchronization/
+├── server.py              # Game server (manages state, broadcasts updates)
+├── client.py              # Game client (GUI, connects to server)
+├── protocol.py            # Network protocol definitions (GCP1.0)
+├── run_baseline_test.py   # Automated test runner
+└── README.md              # This file
+```
 
 ## Required Dependencies
 
@@ -78,26 +95,6 @@ Phase 1 focuses on a working prototype and a baseline local test under ideal con
   - ≤50ms average end-to-end latency
   - <60% average server CPU utilization
 
-## Running Automated Tests
-
-The project includes an automated baseline test script to verify performance:
-
-```bash
-python3 run_baseline_test.py
-```
-
-This script will check/install required packages, verify packet-capture tools, start the server and four clients, run for ~60 seconds, collect metrics and a packet capture, and print PASS/FAIL against the Phase 1 criteria.
-
-**Test Output:**
-Results are saved to `test_results/baseline_YYYY-MM-DD_HH-MM-SS/` containing:
-- `metrics.csv` - Server performance metrics (timestamp, client_id, seq_num, CPU usage)
-- `client_*_metrics.csv` - Client-side metrics (snapshot_id, server_timestamp, receive_timestamp)
-- `baseline_test.pcap` - Network packet capture for analysis
-- `server.log` - Server stdout/stderr logs
-- `packet_capture.log` - Packet capture tool logs
-
-**Test Duration:** 60 seconds (configurable in the script)
-
 ## Protocol Overview
 
 GridClash uses a custom UDP protocol (GCP1.0) for communication.
@@ -137,25 +134,6 @@ checksum         uint32  4       CRC32 checksum of payload
    - Clients send `MSG_SNAPSHOT_ACK` to acknowledge snapshots (for latency measurement)
 4. **Game End:** Server sends `MSG_GAME_OVER` when a player wins
 
-## Project Structure
-
-```
-MultiplayerGameStateSynchronization/
-├── server.py              # Game server (manages state, broadcasts updates)
-├── client.py              # Game client (GUI, connects to server)
-├── protocol.py            # Network protocol definitions (GCP1.0)
-├── run_baseline_test.py   # Automated test runner
-└── README.md              # This file
-```
-
-## Game Rules
-
-1. **Objective:** Fill the entire 8×8 grid with your color
-2. **Players:** Up to 4 players can join
-3. **Turns:** Click any empty cell at any time to claim it
-4. **Winner:** First player to claim the grid wins
-5. **Reset:** Game automatically resets after a win
-
 ## Technical Details
 
 - **Protocol:** Custom UDP protocol (GCP1.0)
@@ -165,6 +143,26 @@ MultiplayerGameStateSynchronization/
 - **Threading:** Multi-threaded server (receive loop + broadcast loop)
 - **Grid Size:** 8×8 (64 cells total)
 - **Player Colors:** Green (1), Red (2), Blue (3), Orange (4)
+
+## Running Automated Tests
+
+The project includes an automated baseline test script to verify performance:
+
+```bash
+python3 run_baseline_test.py
+```
+
+This script will check/install required packages, verify packet-capture tools, start the server and four clients, run for ~60 seconds, collect metrics and a packet capture, and print PASS/FAIL against the Phase 1 criteria.
+
+**Test Output:**
+Results are saved to `test_results/baseline_YYYY-MM-DD_HH-MM-SS/` containing:
+- `metrics.csv` - Server performance metrics (timestamp, client_id, seq_num, CPU usage)
+- `client_*_metrics.csv` - Client-side metrics (snapshot_id, server_timestamp, receive_timestamp)
+- `baseline_test.pcap` - Network packet capture for analysis
+- `server.log` - Server stdout/stderr logs
+- `packet_capture.log` - Packet capture tool logs
+
+**Test Duration:** 60 seconds (configurable in the script)
 
 ## Verifying Test Results
 
