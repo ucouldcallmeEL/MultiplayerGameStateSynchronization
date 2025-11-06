@@ -2,9 +2,7 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
-*.md
 *.pdf
 test_results/
-analyze_results.py
-analyze_pcap.py
-verify_packet_format.py
+test_verification/
+md_files/
