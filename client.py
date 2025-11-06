@@ -215,7 +215,6 @@ class GridClash:
 
         msg = build_event_message(
             player_id=self.my_player_id,
-            action_type=1,
             cell_id=cell_id,
             timestamp=timestamp,
             snapshot_id=self.latest_snapshot_id
@@ -344,6 +343,10 @@ class GridClash:
 
             print(f"[GAME OVER] {message}")
             messagebox.showinfo("Game Over!", message)
+
+            # ✅ Clear the local grid before returning to main menu
+            self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+            self.redraw_full_grid()
 
             # Go back to the main menu
             self.show_main_menu()
