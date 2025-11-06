@@ -225,19 +225,18 @@ def parse_snapshot_ack_payload(payload):
 # === Example Packet Builders ===
 # ==============================================================
 
-def build_event_payload(player_id, action_type, cell_id, timestamp):
+def build_event_payload(player_id, cell_id, timestamp):
     """
     Build an EVENT payload.
     """
-    return struct.pack("!BBHQ", player_id, action_type, cell_id, timestamp)
+    return struct.pack("!BBHQ", player_id, cell_id, timestamp)
 
 
 def parse_event_payload(data):
     """Parse an EVENT message payload."""
-    player_id, action_type, cell_id, timestamp = struct.unpack("!BBHQ", data)
+    player_id,cell_id, timestamp = struct.unpack("!BBHQ", data)
     return {
         "player_id": player_id,
-        "action_type": action_type,
         "cell_id": cell_id,
         "timestamp": timestamp
     }
@@ -256,13 +255,12 @@ def validate_checksum(header_info, payload):
 # === Complete Message Builder (for clients) ===
 # ==============================================================
 
-def build_event_message(player_id, action_type, cell_id, timestamp, snapshot_id=0, seq_num=0):
+def build_event_message(player_id,cell_id, timestamp, snapshot_id=0, seq_num=0):
     """
     Construct a full EVENT message (header + payload) according to GCP1.0.
 
     Args:
         player_id (int): ID of the player sending the event.
-        action_type (int): Type of event/action (e.g., move, claim, etc.)
         cell_id (int): Grid cell affected.
         timestamp (int): Client event timestamp in ms since epoch.
         snapshot_id (int): Snapshot ID reference (default 0 for standalone).
@@ -271,7 +269,7 @@ def build_event_message(player_id, action_type, cell_id, timestamp, snapshot_id=
     Returns:
         bytes: Complete binary message ready to send.
     """
-    payload = build_event_payload(player_id, action_type, cell_id, timestamp)
+    payload = build_event_payload(player_id,cell_id, timestamp)
     header = build_header(MSG_EVENT, snapshot_id, seq_num, payload)
     return header + payload 
 
