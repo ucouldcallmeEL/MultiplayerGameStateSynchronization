@@ -229,12 +229,12 @@ def build_event_payload(player_id, cell_id, timestamp):
     """
     Build an EVENT payload.
     """
-    return struct.pack("!BBHQ", player_id, cell_id, timestamp)
+    return struct.pack("!BHQ", player_id, cell_id, timestamp)
 
 
 def parse_event_payload(data):
     """Parse an EVENT message payload."""
-    player_id,cell_id, timestamp = struct.unpack("!BBHQ", data)
+    player_id,cell_id, timestamp = struct.unpack("!BHQ", data)
     return {
         "player_id": player_id,
         "cell_id": cell_id,
