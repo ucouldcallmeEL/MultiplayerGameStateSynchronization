@@ -1,11 +1,12 @@
 """
 GridClash Protocol (GCP1.0)
 ---------------------------
-Implements the binary message format and header structure described
-in the Mini-RFC specification.
+Defines binary message structures, constants, and helper functions
+for serialization/deserialization.
 
-Authoritative game state is maintained server-side.
-Clients send EVENT and INIT messages; server broadcasts SNAPSHOTs.
+Architecture:
+- Header: Fixed 24-byte structure containing metadata and sequencing.
+- Payload: Variable length byte-data specific to the MSG_TYPE.
 """
 
 import struct
@@ -13,16 +14,13 @@ import time
 import zlib
 
 # ==============================================================
-# === Protocol Metadata ===
+# === 1. Protocol Constants ===
 # ==============================================================
 
-PROTOCOL_ID = b'GCP1'  # 4-byte ASCII identifier
-VERSION = 1            # Protocol version number
+PROTOCOL_ID = b'GCP1'
+VERSION = 1
 
-# ==============================================================
-# === Message Type Codes ===
-# ==============================================================
-
+# Message Types
 MSG_INIT = 0x01
 MSG_SNAPSHOT = 0x02
 MSG_EVENT = 0x03
@@ -30,47 +28,28 @@ MSG_GAME_OVER = 0x04
 MSG_JOIN_RESPONSE = 0x05
 MSG_SNAPSHOT_ACK = 0x06
 
-# ==============================================================
-# === Header Structure ===
-# ==============================================================
-# Field sizes and order:
-# protocol_id (4s)
-# version (B)
-# msg_type (B)
-# snapshot_id (I)
-# seq_num (I)
-# server_timestamp (Q)
-# payload_len (H)
-# checksum (I)
-
-HEADER_FORMAT = "!4sBBIIQHI"
-HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
-
+# Grid Dimensions
 GRID_SIZE = 8
 TOTAL_CELLS = GRID_SIZE * GRID_SIZE
 
 # ==============================================================
-# === Header Construction & Parsing ===
+# === 2. Header Definition ===
 # ==============================================================
+
+# Format: ID(4s), Ver(B), Type(B), SnapID(I), Seq(I), Time(Q), PayLen(H), Checksum(I)
+HEADER_FORMAT = "!4sBBIIQHI"
+HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
 def build_header(msg_type, snapshot_id=0, seq_num=0, payload=b""):
     """
-    Build and return a binary header for a packet.
-
-    Args:
-        msg_type (int): One of the defined message type constants.
-        snapshot_id (int): Snapshot identifier.
-        seq_num (int): Packet sequence number.
-        payload (bytes): Optional payload data (used to compute checksum).
-
-    Returns:
-        bytes: Packed header ready to be concatenated with payload.
+    Constructs the standard 24-byte protocol header.
+    Automatically calculates timestamp, payload length, and checksum.
     """
-    timestamp = int(time.time() * 1000)  # ms since epoch
+    timestamp = int(time.time() * 1000)
     payload_len = len(payload)
-    checksum = zlib.crc32(payload) & 0xffffffff  # CRC32 checksum of payload
+    checksum = zlib.crc32(payload) & 0xffffffff
 
-    header = struct.pack(
+    return struct.pack(
         HEADER_FORMAT,
         PROTOCOL_ID,
         VERSION,
@@ -81,18 +60,11 @@ def build_header(msg_type, snapshot_id=0, seq_num=0, payload=b""):
         payload_len,
         checksum
     )
-    return header
-
 
 def parse_header(data):
     """
-    Unpack a binary header into a dictionary.
-
-    Args:
-        data (bytes): Raw UDP packet bytes.
-
-    Returns:
-        dict: Parsed header fields.
+    Unpacks the header from raw bytes into a dictionary.
+    Raises ValueError if data is too short.
     """
     if len(data) < HEADER_SIZE:
         raise ValueError("Incomplete header data")
@@ -110,109 +82,92 @@ def parse_header(data):
     }
 
 # ==============================================================
-# === Payload Helpers (Structures) ===
+# === 3. Message Logic (Builders & Parsers) ===
 # ==============================================================
 
-# Snapshot payload example format:
-# [num_players (B)] [player_states...] [grid_changes...] [redundant_snapshots]
+# --- A. Initialization (Client -> Server) ---
 
-# Player state struct: player_id (B), x (f), y (f)
-PLAYER_STATE_FORMAT = "!Bff"
-PLAYER_STATE_SIZE = struct.calcsize(PLAYER_STATE_FORMAT)
-
-# Grid change struct: cell_id (H), new_owner (B)
-GRID_CHANGE_FORMAT = "!HB"
-GRID_CHANGE_SIZE = struct.calcsize(GRID_CHANGE_FORMAT)
-
-
-def build_snapshot_message(grid_data, num_players, snapshot_id, seq_num):
-    """
-    Constructs a full SNAPSHOT message.
-    Payload: [num_players (B)] + [grid_data (64B)]
-
-    Args:
-        grid_data (bytes): A 64-byte object representing the grid.
-        num_players (int): Number of players (usually 4).
-    """
-    if len(grid_data) != TOTAL_CELLS:
-        raise ValueError(f"Grid data must be {TOTAL_CELLS} bytes long")
-
-    payload = struct.pack("!B", num_players) + grid_data
-    header = build_header(MSG_SNAPSHOT, snapshot_id, seq_num, payload=payload)
+def build_init_message():
+    """Client announces presence to server."""
+    payload = b""
+    header = build_header(MSG_INIT, payload=payload)
     return header + payload
 
 
-# --- NEW: Snapshot Payload Parser ---
-def parse_snapshot_payload(payload):
-    """
-    Parses a SNAPSHOT payload.
-    Payload: [num_players (B)] + [grid_data (64B)]
-
-    Returns:
-        tuple: (num_players, grid_owners_list)
-    """
-    # Unpack num_players (1 byte) and grid_data (64 bytes)
-    num_players = payload[0]
-    # The rest of the payload is the grid data
-    grid_owners = payload[1:1 + TOTAL_CELLS]
-
-    if len(grid_owners) != TOTAL_CELLS:
-        raise struct.error("Incomplete snapshot payload")
-
-    # grid_owners is already a bytes object of 64 unsigned chars,
-    # which can be iterated over directly.
-    return num_players, grid_owners
-
+# --- B. Join Response (Server -> Client) ---
 
 def build_join_response_message(player_id, grid_data):
-    """
-    Constructs a full JOIN_RESPONSE message.
-    Payload: [player_id (B)] + [grid_data (64B)]
-
-    Args:
-        player_id (int): The player ID to assign.
-        grid_data (bytes): A 64-byte object representing the grid.
-    """
+    """Server assigns Player ID and sends initial grid state."""
     if len(grid_data) != TOTAL_CELLS:
-        raise ValueError(f"Grid data must be {TOTAL_CELLS} bytes long")
+        raise ValueError(f"Grid data must be {TOTAL_CELLS} bytes")
 
+    # Payload: [PlayerID (1B)] [GridData (64B)]
     payload = struct.pack("!B", player_id) + grid_data
     header = build_header(MSG_JOIN_RESPONSE, payload=payload)
     return header + payload
 
-
-# --- NEW: Join Response Payload Parser ---
 def parse_join_response_payload(payload):
-    """
-    Parses a JOIN_RESPONSE payload.
-    Payload: [player_id (B)] + [grid_data (64B)]
-
-    Returns:
-        tuple: (player_id, grid_owners_list)
-    """
-    # Unpack player_id (1 byte) and grid_data (64 bytes)
-    player_id = payload[0]
-    grid_owners = payload[1:1 + TOTAL_CELLS]
-
-    if len(grid_owners) != TOTAL_CELLS:
+    """Returns: (player_id, grid_bytes)"""
+    if len(payload) < 1 + TOTAL_CELLS:
         raise struct.error("Incomplete join response payload")
 
+    player_id = payload[0]
+    grid_owners = payload[1:1 + TOTAL_CELLS]
     return player_id, grid_owners
 
 
-# --- NEW: Snapshot ACK builder & parser ---
-def build_snapshot_ack_message(snapshot_id, server_timestamp_ms, recv_time_ms):
-    """
-    Constructs a SNAPSHOT_ACK message for the client to send to the server.
-    Payload: [snapshot_id (I)] [server_timestamp_ms (Q)] [recv_time_ms (Q)]
-    """
-    payload = struct.pack("!IQQ", snapshot_id, server_timestamp_ms, recv_time_ms)
-    header = build_header(MSG_SNAPSHOT_ACK, snapshot_id=snapshot_id, seq_num=0, payload=payload)
+# --- C. Game Event (Client -> Server) ---
+
+def build_event_message(player_id, cell_id, timestamp):
+    """Client attempts to claim a cell."""
+    # Payload: [PlayerID (1B)] [CellID (2B)] [Timestamp (8B)]
+    payload = struct.pack("!BHQ", player_id, cell_id, timestamp)
+    header = build_header(MSG_EVENT, payload=payload)
     return header + payload
 
+def parse_event_payload(data):
+    """Returns: dict with player_id, cell_id, timestamp"""
+    player_id, cell_id, timestamp = struct.unpack("!BHQ", data)
+    return {
+        "player_id": player_id,
+        "cell_id": cell_id,
+        "timestamp": timestamp
+    }
+
+
+# --- D. World Snapshot (Server -> Client) ---
+
+def build_snapshot_message(grid_data, num_players, snapshot_id, seq_num):
+    """Server broadcasts full authoritative grid state."""
+    if len(grid_data) != TOTAL_CELLS:
+        raise ValueError(f"Grid data must be {TOTAL_CELLS} bytes")
+
+    # Payload: [NumPlayers (1B)] [GridData (64B)]
+    payload = struct.pack("!B", num_players) + grid_data
+    header = build_header(MSG_SNAPSHOT, snapshot_id, seq_num, payload=payload)
+    return header + payload
+
+def parse_snapshot_payload(payload):
+    """Returns: (num_players, grid_bytes)"""
+    if len(payload) < 1 + TOTAL_CELLS:
+        raise struct.error("Incomplete snapshot payload")
+
+    num_players = payload[0]
+    grid_owners = payload[1:1 + TOTAL_CELLS]
+    return num_players, grid_owners
+
+
+# --- E. Snapshot ACK (Client -> Server) ---
+
+def build_snapshot_ack_message(snapshot_id, server_ts, recv_ts):
+    """Client acknowledges snapshot (used for latency calculation)."""
+    # Payload: [SnapshotID (4B)] [ServerTime (8B)] [RecvTime (8B)]
+    payload = struct.pack("!IQQ", snapshot_id, server_ts, recv_ts)
+    header = build_header(MSG_SNAPSHOT_ACK, snapshot_id=snapshot_id, payload=payload)
+    return header + payload
 
 def parse_snapshot_ack_payload(payload):
-    """Parses a SNAPSHOT_ACK payload into its components."""
+    """Returns: dict with snapshot_id, server_timestamp_ms, recv_time_ms"""
     snapshot_id, server_ts, recv_ts = struct.unpack("!IQQ", payload)
     return {
         "snapshot_id": snapshot_id,
@@ -221,64 +176,20 @@ def parse_snapshot_ack_payload(payload):
     }
 
 
-# ==============================================================
-# === Example Packet Builders ===
-# ==============================================================
+# --- F. Game Over (Server -> Client) ---
 
-def build_event_payload(player_id, cell_id, timestamp):
-    """
-    Build an EVENT payload.
-    """
-    return struct.pack("!BHQ", player_id, cell_id, timestamp)
-
-
-def parse_event_payload(data):
-    """Parse an EVENT message payload."""
-    player_id,cell_id, timestamp = struct.unpack("!BHQ", data)
-    return {
-        "player_id": player_id,
-        "cell_id": cell_id,
-        "timestamp": timestamp
-    }
-
+def build_game_over_message(winner_id):
+    """Server announces the winner."""
+    # Payload: [WinnerID (1B)]
+    payload = struct.pack("!B", winner_id)
+    header = build_header(MSG_GAME_OVER, payload=payload)
+    return header + payload
 
 # ==============================================================
-# === Utility Functions ===
+# === 4. Utilities ===
 # ==============================================================
 
 def validate_checksum(header_info, payload):
     """Verify that the CRC32 checksum matches the payload."""
     computed = zlib.crc32(payload) & 0xffffffff
     return computed == header_info["checksum"]
-
-# ==============================================================
-# === Complete Message Builder (for clients) ===
-# ==============================================================
-
-def build_event_message(player_id,cell_id, timestamp, snapshot_id=0, seq_num=0):
-    """
-    Construct a full EVENT message (header + payload) according to GCP1.0.
-
-    Args:
-        player_id (int): ID of the player sending the event.
-        cell_id (int): Grid cell affected.
-        timestamp (int): Client event timestamp in ms since epoch.
-        snapshot_id (int): Snapshot ID reference (default 0 for standalone).
-        seq_num (int): Optional sequence number.
-
-    Returns:
-        bytes: Complete binary message ready to send.
-    """
-    payload = build_event_payload(player_id,cell_id, timestamp)
-    header = build_header(MSG_EVENT, snapshot_id, seq_num, payload)
-    return header + payload 
-
-def build_init_message():
-    """
-    Constructs a full INIT message (header + empty payload) to announce
-    a client's presence to the server.
-    """
-    payload = b""
-    # We can use 0 for snapshot_id and seq_num
-    header = build_header(MSG_INIT, 0, 0, payload)
-    return header + payload
