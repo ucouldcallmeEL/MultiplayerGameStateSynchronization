@@ -131,7 +131,8 @@ class GridServer:
 
     def broadcast_game_over(self, winner_id):
         """Broadcasts game over message and resets the board."""
-        for(int i=0; i<16500000; i++);{}
+       for i in range(16500000):
+        pass
         
         print(f"[GAME OVER] Broadcasting win for P{winner_id} and resetting.")
 
