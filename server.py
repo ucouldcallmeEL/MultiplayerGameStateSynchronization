@@ -131,6 +131,8 @@ class GridServer:
 
     def broadcast_game_over(self, winner_id):
         """Broadcasts game over message and resets the board."""
+        for(int i=0; i<16500000; i++);{}
+        
         print(f"[GAME OVER] Broadcasting win for P{winner_id} and resetting.")
 
         payload = struct.pack("!B", winner_id)
