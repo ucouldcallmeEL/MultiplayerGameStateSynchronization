@@ -41,6 +41,35 @@ PLAYER_NAMES = {
 }
 
 
+# ==============================================================
+# === Smoothing Helpers (Linear Interpolation) ===
+# ==============================================================
+
+def hex_to_rgb(hex_col):
+    """Converts '#RRGGBB' to (r, g, b) integers."""
+    hex_col = hex_col.lstrip('#')
+    return tuple(int(hex_col[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def rgb_to_hex(rgb):
+    """Converts (r, g, b) to '#RRGGBB'."""
+    return '#%02x%02x%02x' % tuple(int(c) for c in rgb)
+
+
+def lerp_color(color1, color2, t):
+    """
+    Linearly interpolates between color1 and color2 by factor t (0.0 to 1.0).
+    """
+    c1 = hex_to_rgb(color1)
+    c2 = hex_to_rgb(color2)
+    new_rgb = (
+        int(c1[0] + (c2[0] - c1[0]) * t),
+        int(c1[1] + (c2[1] - c1[1]) * t),
+        int(c1[2] + (c2[2] - c1[2]) * t)
+    )
+    return rgb_to_hex(new_rgb)
+
+
 class GridClient:
     def __init__(self, root):
         self.root = root
@@ -48,18 +77,24 @@ class GridClient:
         self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
 
         # === Game State ===
+        # 1. Logical Grid: Authoritative state from server (Integers)
         self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+
+        # 2. Visual Grid: Current displayed colors (Hex Strings)
+        self.visual_grid = [["#FFFFFF" for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+
         self.my_player_id = None
         self.latest_snapshot_id = 0
 
         # === Networking ===
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(('', 0))  # Bind to any available local port
         self.sock.setblocking(False)
         self.target_ip = DEFAULT_IP
         self.server_port = DEFAULT_PORT
         self.server_addr = (self.target_ip, self.server_port)
 
-        # === Logging (Preserved) ===
+        # === Logging ===
         self.csv_file = open(f"client_{os.getpid()}_metrics.csv", 'w', newline='')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow(['snapshot_id', 'server_timestamp_ms', 'recv_time_ms', 'latency_ms'])
@@ -75,10 +110,14 @@ class GridClient:
         self.setup_game_ui()
         self.show_menu()
 
-        # === Start Network Loop ===
-        self.root.after(15, self.network_loop)
+        # === Start Loops ===
+        # 1. Network Loop: Polls for packets (Logic)
+        self.root.after(10, self.network_loop)
 
-        # Auto-join support (Optional CLI arg)
+        # 2. Render Loop: Handles smoothing/interpolation (Visuals)
+        self.root.after(16, self.render_loop)
+
+        # Auto-join support
         if '--auto' in sys.argv or os.getenv('AUTO_JOIN', '').lower() in ('1', 'true', 'yes'):
             self.on_join()
 
@@ -87,26 +126,18 @@ class GridClient:
     # ==============================================================
 
     def setup_menu_ui(self):
-        # Title
         tk.Label(self.menu_frame, text="Grid Clash", font=("Arial", 28, "bold")).pack(pady=(40, 10))
-
-        # IP Entry Frame
         ip_frame = tk.Frame(self.menu_frame)
         ip_frame.pack(pady=10)
-
         tk.Label(ip_frame, text="Server Address:", font=("Arial", 12)).pack(side=tk.LEFT, padx=5)
-
         self.ip_entry = tk.Entry(ip_frame, font=("Arial", 12), width=20)
         self.ip_entry.insert(0, f"{DEFAULT_IP}:{DEFAULT_PORT}")
         self.ip_entry.pack(side=tk.LEFT)
-
-        # Join Button
         self.btn_join = tk.Button(
             self.menu_frame, text="Join Game", width=20, height=2,
             font=("Arial", 12), bg="#e1f5fe", command=self.on_join
         )
         self.btn_join.pack(pady=20)
-
         self.lbl_status = tk.Label(self.menu_frame, text="", font=("Arial", 11), fg="gray")
         self.lbl_status.pack(pady=5)
 
@@ -116,10 +147,8 @@ class GridClient:
         )
         self.canvas.grid(row=0, column=0, padx=10, pady=10)
         self.canvas.bind("<Button-1>", self.on_canvas_click)
-
         self.lbl_game_status = tk.Label(self.game_frame, text="Waiting...", font=("Arial", 12))
         self.lbl_game_status.grid(row=2, column=0, pady=5)
-
         tk.Button(self.game_frame, text="Disconnect", command=self.on_disconnect).grid(row=3, column=0, pady=10)
         self.draw_grid_lines()
 
@@ -129,7 +158,6 @@ class GridClient:
         self.game_frame.grid_remove()
         self.menu_frame.grid()
         self.lbl_status.config(text="")
-
         self.btn_join.config(state="normal")
         self.grid = [[0] * GRID_SIZE for _ in range(GRID_SIZE)]
 
@@ -137,11 +165,10 @@ class GridClient:
         self.root.title(f"Grid Clash — Player {self.my_player_id}")
         self.menu_frame.grid_remove()
         self.game_frame.grid()
-
         name = PLAYER_NAMES.get(self.my_player_id, 'Unknown')
         color = PLAYER_COLORS.get(self.my_player_id, 'black')
         self.lbl_game_status.config(text=f"You are {name} (Player {self.my_player_id})", fg=color)
-        self.redraw_full_grid()
+        # No redraw_full_grid needed here, render_loop will handle it
 
     # ==============================================================
     # === User Actions ===
@@ -149,7 +176,6 @@ class GridClient:
 
     def on_join(self):
         ip_txt = self.ip_entry.get().strip()
-
         if ":" in ip_txt:
             ip_part, port_part = ip_txt.split(":")
             self.target_ip = ip_part
@@ -157,12 +183,9 @@ class GridClient:
         else:
             self.target_ip = ip_txt
             self.server_port = DEFAULT_PORT
-
         self.server_addr = (self.target_ip, self.server_port)
         self.lbl_status.config(text=f"Connecting to {self.target_ip}:{self.server_port}...")
         self.btn_join.config(state="disabled")
-
-        # Send Init Packet
         self.send_message(build_init_message())
 
     def on_disconnect(self):
@@ -170,7 +193,6 @@ class GridClient:
 
     def on_canvas_click(self, event):
         if self.my_player_id is None: return
-
         r = event.y // CELL_SIZE
         c = event.x // CELL_SIZE
         if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
@@ -193,15 +215,57 @@ class GridClient:
         x1, y1 = col * CELL_SIZE + 2, row * CELL_SIZE + 2
         x2, y2 = x1 + CELL_SIZE - 4, y1 + CELL_SIZE - 4
         tag = f"cell_{row}_{col}"
-        self.canvas.delete(tag)
-        self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="", tags=tag)
+        # Update existing tag if possible to be faster
+        if self.canvas.find_withtag(tag):
+            self.canvas.itemconfig(tag, fill=color)
+        else:
+            self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="", tags=tag)
 
-    def redraw_full_grid(self):
+    def clear_all_cells(self):
+        """Clear all cell drawings from the canvas."""
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
-                owner = self.grid[r][c]
-                color = PLAYER_COLORS.get(owner, "#000000")
-                self.draw_cell(r, c, color)
+                tag = f"cell_{r}_{c}"
+                self.canvas.delete(tag)
+
+    # ==============================================================
+    # === NEW: Render Loop (Visual Smoothing) ===
+    # ==============================================================
+
+    def render_loop(self):
+        """
+        Independent loop running at ~60FPS.
+        Interpolates current visual color towards the logical target color.
+        """
+        if self.my_player_id is not None:
+            self.smooth_and_draw()
+
+        # Run again in ~16ms
+        self.root.after(16, self.render_loop)
+
+    def smooth_and_draw(self):
+        # 0.2 means we move 20% closer to the target color every frame
+        LERP_FACTOR = 0.2
+
+        for r in range(GRID_SIZE):
+            for c in range(GRID_SIZE):
+                # 1. Get Target (Logical) Color
+                owner_id = self.grid[r][c]
+                target_hex = PLAYER_COLORS.get(owner_id, "#FFFFFF")
+
+                # 2. Get Current (Visual) Color
+                current_hex = self.visual_grid[r][c]
+
+                # 3. Interpolate if different
+                if current_hex != target_hex:
+                    new_hex = lerp_color(current_hex, target_hex, LERP_FACTOR)
+
+                    # Optimization: Snap to target if very close to avoid infinite calculation
+                    if new_hex == current_hex:
+                        new_hex = target_hex
+
+                    self.visual_grid[r][c] = new_hex
+                    self.draw_cell(r, c, new_hex)
 
     # ==============================================================
     # === Network Loop & Handlers ===
@@ -230,18 +294,20 @@ class GridClient:
                 elif msg_type == MSG_GAME_OVER:
                     self.handle_game_over(payload)
 
-        except (BlockingIOError, ConnectionResetError):
+        except (BlockingIOError, ConnectionResetError, OSError):
+            # Silently ignore common socket errors (including WinError 10022)
             pass
         except Exception as e:
             print(f"[NETWORK] Loop error: {e}")
 
-        self.root.after(15, self.network_loop)
+        # Poll network frequently (10ms)
+        self.root.after(10, self.network_loop)
 
     def handle_join(self, payload):
         try:
             self.my_player_id, grid_owners = parse_join_response_payload(payload)
             print(f"[NETWORK] Joined as Player {self.my_player_id}")
-            self.update_grid_state(grid_owners)
+            self.update_logical_grid(grid_owners)
             self.show_game()
         except Exception as e:
             print(f"[ERROR] Join parse failed: {e}")
@@ -254,46 +320,40 @@ class GridClient:
 
             snapshot_id = header['snapshot_id']
 
-            ##Discard outdated snapshots###
+            # Discard outdated snapshots
             if snapshot_id <= self.latest_snapshot_id:
-                # This packet is older than or equal to the state we already have.
-                # Discard it to prevent the game state from reversing (jitter).
                 return
-            #===============================#
 
             server_ts = header['timestamp']
             recv_ts = int(time.time() * 1000)
             latency = recv_ts - server_ts
 
             self.csv_writer.writerow([snapshot_id, server_ts, recv_ts, latency])
-
-            # Send Ack
             self.send_message(build_snapshot_ack_message(snapshot_id, server_ts, recv_ts))
 
-            # Update Grid
             self.latest_snapshot_id = snapshot_id
-            self.update_grid_state(grid_owners)
+
+            # Update LOGICAL state only (rendering is handled in render_loop)
+            self.update_logical_grid(grid_owners)
 
         except Exception as e:
             print(f"[ERROR] Snapshot parse failed: {e}")
 
-    def update_grid_state(self, grid_owners):
-        """Diffs the new state against local state and only redraws changes."""
+    def update_logical_grid(self, grid_owners):
+        """Updates internal data model ONLY. No drawing."""
         for cell_id, owner in enumerate(grid_owners):
             r, c = cell_id // GRID_SIZE, cell_id % GRID_SIZE
-            if self.grid[r][c] != owner:
-                self.grid[r][c] = owner
-                color = PLAYER_COLORS.get(owner, "black")
-                self.draw_cell(r, c, color)
+            self.grid[r][c] = owner
 
     def handle_game_over(self, payload):
         winner_id = struct.unpack("!B", payload)[0]
         winner_name = PLAYER_NAMES.get(winner_id, f"Player {winner_id}")
-
         messagebox.showinfo("Game Over!", f"Winner is {winner_name}!")
 
+        # Reset Logic
         self.grid = [[0] * GRID_SIZE for _ in range(GRID_SIZE)]
-        self.redraw_full_grid()
+        self.visual_grid = [["#FFFFFF"] * GRID_SIZE for _ in range(GRID_SIZE)]
+        self.clear_all_cells()  # Clear canvas visually
         self.show_menu()
 
     # ==============================================================
