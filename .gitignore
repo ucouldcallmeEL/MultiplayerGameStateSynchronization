@@ -6,6 +6,7 @@ __pycache__/
 test_results/
 test_verification/
 md_files/
+*.pyc
 *.csv
 .idea/
 __pycache__/
