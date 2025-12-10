@@ -37,8 +37,8 @@ echo "========================================================="
 echo " Starting Python Experiment Runner..."
 echo "========================================================="
 
-# 4. Make Python Script Executable
-chmod +x run_experiments.py
+# 4. Make Python Scripts Executable
+chmod +x run_experiments.py automated_client.py
 
 # 5. Run the Master Script
 # Using -u to unbuffer stdout so you see real-time progress
