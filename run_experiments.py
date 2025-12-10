@@ -70,7 +70,8 @@ def run_scenario(scenario_name, config):
     # 4. Start Server
     print("[EXEC] Starting Server...")
     srv_log = open(outdir / "server.log", "w")
-    server_proc = subprocess.Popen([sys.executable, "server.py"], stdout=srv_log, stderr=subprocess.STDOUT, cwd=ROOT)
+    # server_proc = subprocess.Popen([sys.executable, "server.py"], stdout=srv_log, stderr=subprocess.STDOUT, cwd=ROOT)
+    server_proc = subprocess.Popen([sys.executable, "-u", "server.py"], stdout=srv_log, stderr=subprocess.STDOUT, cwd=ROOT)
     time.sleep(1) # Let server bind
 
     # 5. Start Clients
@@ -82,7 +83,7 @@ def run_scenario(scenario_name, config):
     for i in range(1, NUM_CLIENTS + 1):
         c_log = open(outdir / f"client_{i}.log", "w")
         # Clients need to run in background
-        proc = subprocess.Popen([sys.executable, "client.py", "--auto"], 
+        proc = subprocess.Popen([sys.executable, "-u", "client.py", "--auto"], 
                                 stdout=c_log, stderr=subprocess.STDOUT, cwd=ROOT, env=env)
         client_procs.append(proc)
         time.sleep(0.2)

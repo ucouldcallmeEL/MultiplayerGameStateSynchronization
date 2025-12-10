@@ -35,7 +35,8 @@ GAME_TICK_RATE = 1 / 40.0
 
 class GridServer:
     def __init__(self, ip=SERVER_IP, port=SERVER_PORT):
-        print(f"[SERVER] Initializing on {ip}:{port}")
+        # print(f"[SERVER] Initializing on {ip}:{port}")
+        print(f"[SERVER] Initializing on {ip}:{port}", flush=True)
         
         # === Networking ===
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
