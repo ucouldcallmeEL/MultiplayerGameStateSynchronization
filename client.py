@@ -4,34 +4,17 @@ import tkinter.messagebox as messagebox
 import time
 import socket
 import struct
-import os
 import sys
-import csv
+import os
 
-# === IMPORT SERVER FOR HOSTING ===
+# === IMPORT THE SERVER ===
 try:
     from server import GridServer
 except ImportError:
+    print("[WARNING] Could not import GridServer. Hosting will be disabled.")
     GridServer = None
 
-from protocol import (
-    build_event_message,
-    build_init_message,
-    parse_header,
-    parse_join_response_payload,
-    HEADER_SIZE,
-    MSG_JOIN_RESPONSE,
-    MSG_GAME_OVER,
-    GRID_SIZE,
-    MSG_GENERIC_ACK,
-    build_ack_message,
-    MSG_CELL_UPDATE,
-    parse_ack_payload,
-    parse_cell_update_payload,
-    build_header,
-    MSG_EVENT,
-    MSG_HEARTBEAT
-)
+from protocol import *
 
 # ==============================================================
 # === Configuration ===
@@ -55,8 +38,8 @@ class GridClient:
         # === Game State ===
         self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
         self.my_player_id = None
-        self.last_heartbeat_time = time.time()
-        self.is_game_over_processed = False  # <--- NEW FLAG
+        self.is_game_over_processed = False
+        self.latest_snapshot_id = 0
 
         # === Host State ===
         self.server_instance = None
@@ -90,100 +73,132 @@ class GridClient:
         threading.Thread(target=self.reliability_loop, daemon=True).start()
 
     # ==============================================================
-    # === UI Construction ===
+    # === UI Construction (Original Restored) ===
     # ==============================================================
 
     def setup_menu_ui(self):
         tk.Label(self.menu_frame, text="Grid Clash", font=("Arial", 28, "bold")).pack(pady=(40, 20))
 
+        # === INPUT CONTAINER ===
         input_frame = tk.Frame(self.menu_frame)
         input_frame.pack(pady=10)
 
-        tk.Label(input_frame, text="IP Address:").grid(row=0, column=0, sticky="e")
-        self.ip_entry = tk.Entry(input_frame)
+        # IP Address
+        tk.Label(input_frame, text="IP Address:", font=("Arial", 12)).grid(row=0, column=0, padx=5, sticky="e")
+        self.ip_entry = tk.Entry(input_frame, font=("Arial", 12), width=15)
         self.ip_entry.insert(0, DEFAULT_IP)
-        self.ip_entry.grid(row=0, column=1)
+        self.ip_entry.grid(row=0, column=1, padx=5, pady=5)
 
-        tk.Label(input_frame, text="Port:").grid(row=1, column=0, sticky="e")
-        self.port_entry = tk.Entry(input_frame)
+        # Port
+        tk.Label(input_frame, text="Port:", font=("Arial", 12)).grid(row=1, column=0, padx=5, sticky="e")
+        self.port_entry = tk.Entry(input_frame, font=("Arial", 12), width=15)
         self.port_entry.insert(0, str(DEFAULT_PORT))
-        self.port_entry.grid(row=1, column=1)
+        self.port_entry.grid(row=1, column=1, padx=5, pady=5)
 
+        # Buttons
         btn_frame = tk.Frame(self.menu_frame)
         btn_frame.pack(pady=30)
 
-        self.btn_join = tk.Button(btn_frame, text="Join Game", command=self.on_join, width=15)
+        self.btn_join = tk.Button(
+            btn_frame, text="Join Game", width=15, height=2,
+            font=("Arial", 12), bg="#e1f5fe", command=self.on_join
+        )
         self.btn_join.pack(side=tk.LEFT, padx=10)
 
         if GridServer:
-            self.btn_host = tk.Button(btn_frame, text="Host & Play", command=self.on_host, width=15)
+            self.btn_host = tk.Button(
+                btn_frame, text="Host & Play", width=15, height=2,
+                font=("Arial", 12), bg="#e8f5e9", command=self.on_host
+            )
             self.btn_host.pack(side=tk.LEFT, padx=10)
 
-        self.lbl_status = tk.Label(self.menu_frame, text="", fg="gray")
+        self.lbl_status = tk.Label(self.menu_frame, text="", font=("Arial", 11), fg="gray")
         self.lbl_status.pack(pady=5)
 
     def setup_game_ui(self):
-        self.canvas = tk.Canvas(self.game_frame, width=GRID_SIZE * CELL_SIZE, height=GRID_SIZE * CELL_SIZE, bg="white")
+        self.canvas = tk.Canvas(
+            self.game_frame, width=GRID_SIZE * CELL_SIZE, height=GRID_SIZE * CELL_SIZE, bg="white"
+        )
         self.canvas.grid(row=0, column=0, padx=10, pady=10)
         self.canvas.bind("<Button-1>", self.on_canvas_click)
-
         self.lbl_game_status = tk.Label(self.game_frame, text="Waiting...", font=("Arial", 12))
-        self.lbl_game_status.grid(row=2, column=0)
+        self.lbl_game_status.grid(row=2, column=0, pady=5)
 
-        tk.Button(self.game_frame, text="Disconnect", command=self.on_disconnect).grid(row=3, column=0)
+        tk.Button(self.game_frame, text="Disconnect / Stop", command=self.on_disconnect).grid(row=3, column=0, pady=10)
+        self.draw_grid_lines()
 
     def show_menu(self):
         self.my_player_id = None
+        self.root.title("Grid Clash")
         self.game_frame.grid_remove()
         self.menu_frame.grid()
         self.lbl_status.config(text="")
         self.btn_join.config(state="normal")
-        if hasattr(self, 'btn_host'): self.btn_host.config(state="normal")
-        # Reset flag
-        self.is_game_over_processed = False
+        if hasattr(self, 'btn_host'):
+            self.btn_host.config(state="normal")
+        self.ip_entry.config(state="normal")
+        self.port_entry.config(state="normal")
 
     def show_game(self):
+        self.root.title(f"Grid Clash — Player {self.my_player_id}")
         self.menu_frame.grid_remove()
         self.game_frame.grid()
         name = PLAYER_NAMES.get(self.my_player_id, 'Unknown')
         color = PLAYER_COLORS.get(self.my_player_id, 'black')
         self.lbl_game_status.config(text=f"You are {name} (Player {self.my_player_id})", fg=color)
         self.draw_grid()
-        # Reset flag
-        self.is_game_over_processed = False
 
     # ==============================================================
-    # === Actions ===
+    # === User Actions ===
     # ==============================================================
 
     def on_host(self):
+        if self.server_instance:
+            self.lbl_status.config(text="Server already running.")
+            return
+
         try:
-            port = int(self.port_entry.get())
-            self.server_instance = GridServer("0.0.0.0", port)
+            port_txt = self.port_entry.get().strip()
+            local_port = int(port_txt) if port_txt else DEFAULT_PORT
+
+            self.lbl_status.config(text=f"Starting server on port {local_port}...")
+            self.root.update()
+
+            self.server_instance = GridServer(ip="0.0.0.0", port=local_port)
             self.server_thread = threading.Thread(target=self.server_instance.start, daemon=True)
             self.server_thread.start()
+
             time.sleep(0.5)
+
             self.ip_entry.delete(0, tk.END)
             self.ip_entry.insert(0, "127.0.0.1")
             self.on_join()
-        except Exception as e:
-            self.lbl_status.config(text=f"Error: {e}")
+
+        except OSError as e:
+            self.lbl_status.config(text=f"Failed: Port {port_txt} in use.")
+            self.server_instance = None
+        except ValueError:
+            self.lbl_status.config(text="Invalid Port Number")
 
     def on_join(self):
         try:
-            self.target_ip = self.ip_entry.get().strip()
-            self.server_port = int(self.port_entry.get().strip())
-            self.server_addr = (self.target_ip, self.server_port)
+            target_ip = self.ip_entry.get().strip()
+            target_port = int(self.port_entry.get().strip())
+            self.server_addr = (target_ip, target_port)
 
             self.seq_num = 0
             with self.lock:
                 self.reliable_buffer.clear()
             self.grid = [[0] * GRID_SIZE for _ in range(GRID_SIZE)]
             self.is_game_over_processed = False
+            self.latest_snapshot_id = 0
 
             self.send_message(build_init_message())
             self.lbl_status.config(text="Connecting...")
             self.btn_join.config(state="disabled")
+            self.ip_entry.config(state="disabled")
+            self.port_entry.config(state="disabled")
+
         except ValueError:
             self.lbl_status.config(text="Invalid Port")
 
@@ -198,22 +213,20 @@ class GridClient:
         r = event.y // CELL_SIZE
         c = event.x // CELL_SIZE
         if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
-            ts = int(time.time() * 1000)
-            cell_id = r * GRID_SIZE + c
-
             self.seq_num += 1
-            curr_seq = self.seq_num
-
-            # Build Event Message (Critical)
-            msg = build_event_message(self.my_player_id, cell_id, ts, curr_seq)
-            self.send_reliable(msg, curr_seq)
+            # Send Critical Event Reliably
+            msg = build_event_message(self.my_player_id, r * GRID_SIZE + c, int(time.time() * 1000), self.seq_num)
+            self.send_reliable(msg, self.seq_num)
 
     # ==============================================================
     # === Network & Reliability ===
     # ==============================================================
 
     def send_message(self, msg):
-        self.sock.sendto(msg, self.server_addr)
+        try:
+            self.sock.sendto(msg, self.server_addr)
+        except Exception:
+            pass
 
     def send_reliable(self, packet, seq_num):
         self.send_message(packet)
@@ -247,43 +260,40 @@ class GridClient:
 
                 header = parse_header(data)
                 payload = data[HEADER_SIZE:]
-                msg_type = header["msg_type"]
+                mtype = header["msg_type"]
 
-                # 1. ACK Handling
-                if msg_type == MSG_GENERIC_ACK:
-                    acked_seq = parse_ack_payload(payload)
+                if mtype == MSG_GENERIC_ACK:
+                    seq = parse_ack_payload(payload)
                     with self.lock:
-                        if acked_seq in self.reliable_buffer:
-                            del self.reliable_buffer[acked_seq]
+                        if seq in self.reliable_buffer: del self.reliable_buffer[seq]
 
-                # 2. Critical Game Events (Cell Updates)
-                elif msg_type == MSG_CELL_UPDATE:
-                    seq_in = header['seq_num']
-                    self.send_message(build_ack_message(seq_in))
-
+                elif mtype == MSG_CELL_UPDATE:
+                    # Critical Update from Server - MUST ACK
+                    self.send_message(build_ack_message(header['seq_num']))
                     r, c, owner = parse_cell_update_payload(payload)
                     self.grid[r][c] = owner
-                    self.draw_cell(r, c, PLAYER_COLORS.get(owner, "white"))
+                    self.draw_cell(r, c, PLAYER_COLORS[owner])
 
-                # 3. Heartbeats
-                elif msg_type == MSG_HEARTBEAT:
-                    self.last_heartbeat_time = time.time()
+                elif mtype == MSG_SNAPSHOT:
+                    # Unreliable Heartbeat Snapshot - No ACK needed
+                    snap_id = header['snapshot_id']
+                    if snap_id > self.latest_snapshot_id:
+                        self.latest_snapshot_id = snap_id
+                        owners = parse_snapshot_payload(payload)
+                        self.update_full_grid(owners)
 
-                # 4. Join / Game Over
-                elif msg_type == MSG_JOIN_RESPONSE:
-                    self.my_player_id, grid_owners = parse_join_response_payload(payload)
-                    self.update_full_grid(grid_owners)
+                elif mtype == MSG_JOIN_RESPONSE:
+                    self.my_player_id, owners = parse_join_response_payload(payload)
+                    self.update_full_grid(owners)
                     self.show_game()
 
-                elif msg_type == MSG_GAME_OVER:
-                    # A. Always ACK the server so it stops sending retries
+                elif mtype == MSG_GAME_OVER:
+                    # Critical - ACK it
                     self.send_message(build_ack_message(header['seq_num']))
-
-                    # B. Only show the popup once
                     if not self.is_game_over_processed:
                         self.is_game_over_processed = True
-                        winner_id = struct.unpack("!B", payload)[0]
-                        messagebox.showinfo("Game Over!", f"Winner is Player {winner_id}!")
+                        winner = struct.unpack("!B", payload)[0]
+                        messagebox.showinfo("Game Over", f"Winner: P{winner}")
                         self.on_disconnect()
 
         except Exception:
@@ -294,13 +304,15 @@ class GridClient:
     # === Drawing ===
     # ==============================================================
 
-    def draw_grid(self):
-        self.canvas.delete("all")
+    def draw_grid_lines(self):
         for i in range(GRID_SIZE):
             for j in range(GRID_SIZE):
                 x1, y1 = j * CELL_SIZE, i * CELL_SIZE
                 self.canvas.create_rectangle(x1, y1, x1 + CELL_SIZE, y1 + CELL_SIZE, outline="gray")
 
+    def draw_grid(self):
+        self.canvas.delete("all")
+        self.draw_grid_lines()
         for r in range(GRID_SIZE):
             for c in range(GRID_SIZE):
                 if self.grid[r][c] != 0:
@@ -316,9 +328,9 @@ class GridClient:
         else:
             self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="", tags=tag)
 
-    def update_full_grid(self, grid_owners):
-        for cell_id, owner in enumerate(grid_owners):
-            r, c = cell_id // GRID_SIZE, cell_id % GRID_SIZE
+    def update_full_grid(self, owners):
+        for i, owner in enumerate(owners):
+            r, c = i // GRID_SIZE, i % GRID_SIZE
             self.grid[r][c] = owner
         self.draw_grid()
 
