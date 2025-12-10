@@ -45,6 +45,9 @@ class GridServer:
 
         # === Networking ===
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # === FIX: ALLOW PORT REUSE ===
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # =============================
         self.sock.bind((ip, port))
         self.sock.setblocking(False)
         self.running = True
@@ -274,17 +277,17 @@ class GridServer:
         """Handles reliable inputs from clients."""
 
         # 1. EXTRACT SEQ & ACK IMMEDIATELY
-        # We must ACK the client's sequence number so they stop retrying.
+        # We must ACK the client's sequence number so they stop retrying. Ben2olo: Sam3ak ya bani2adam
         client_seq = header['seq_num']
         ack_msg = build_ack_message(client_seq)
-        self.sock.sendto(ack_msg, addr)
+        self.sock.sendto(ack_msg, addr) ##sending the ack to the socket
 
         with self.state_lock:
             if addr not in self.game_clients:
                 return
 
             # 2. DEDUPLICATION (Traffic Protection)
-            # If we already processed this sequence number from this client, ignore the logic.
+            # Server checks: "Have I already done task #10 for this guy?".If yes, return (stop).
             last_seq = self.client_last_processed_seq.get(addr, -1)
             if client_seq <= last_seq:
                 # print(f"[Server] Ignoring duplicate event {client_seq} from {addr}")
@@ -389,7 +392,7 @@ class GridServer:
             # or we can use a separate sequence counter for snapshots if needed.
             time.sleep(GAME_TICK_RATE)
 
-    def receive_loop(self):
+    def receive_loop(self): ## Used when the packet arrives at the socket
         """Handles incoming UDP packets."""
         while self.running:
             try:
@@ -397,14 +400,14 @@ class GridServer:
                 if len(data) < HEADER_SIZE:
                     continue
 
-                header = parse_header(data)
+                header = parse_header(data) ##rips off 1st 24 bytes to read the metadata (sequence number, msg types)
                 payload = data[HEADER_SIZE:]
                 msg_type = header["msg_type"]
 
                 if msg_type == MSG_INIT:
                     self.handle_player_join(addr)
 
-                elif msg_type == MSG_EVENT:
+                elif msg_type == MSG_EVENT:     ## sees the type as an event (0x3), and sends it to an event handler
                     self.handle_event_message(addr, header, payload)
 
                 elif msg_type == MSG_GENERIC_ACK:
