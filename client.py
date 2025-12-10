@@ -1,3 +1,4 @@
+import threading
 import tkinter as tk
 import tkinter.messagebox as messagebox
 import time
@@ -18,7 +19,12 @@ from protocol import (
     MSG_SNAPSHOT,
     MSG_JOIN_RESPONSE,
     MSG_GAME_OVER,
-    GRID_SIZE
+    GRID_SIZE,
+    MSG_GENERIC_ACK,
+    build_ack_message,
+    MSG_CELL_UPDATE,
+    parse_ack_payload,
+    parse_cell_update_payload, build_header, MSG_EVENT
 )
 
 # ==============================================================
@@ -110,12 +116,20 @@ class GridClient:
         self.setup_game_ui()
         self.show_menu()
 
+        # === Reliability ===
+        self.seq_num = 0
+        self.reliable_buffer = {}  # { seq_num: {packet, time, retries} }
+        self.lock = threading.Lock()  # Thread safety for buffer
+
         # === Start Loops ===
         # 1. Network Loop: Polls for packets (Logic)
         self.root.after(10, self.network_loop)
 
         # 2. Render Loop: Handles smoothing/interpolation (Visuals)
         self.root.after(16, self.render_loop)
+
+        # 3. Reliability Loop
+        threading.Thread(target=self.reliability_loop, daemon=True).start()
 
         # Auto-join support
         if '--auto' in sys.argv or os.getenv('AUTO_JOIN', '').lower() in ('1', 'true', 'yes'):
@@ -196,10 +210,21 @@ class GridClient:
         r = event.y // CELL_SIZE
         c = event.x // CELL_SIZE
         if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
-            cell_id = r * GRID_SIZE + c
+            # 1. Send Reliable Event
             ts = int(time.time() * 1000)
-            msg = build_event_message(self.my_player_id, cell_id, ts)
-            self.send_message(msg)
+
+            cell_id = r * GRID_SIZE + c
+
+            # Increment MY sequence number
+            self.seq_num += 1
+            curr_seq = self.seq_num
+
+            # Rebuild packet manually to include Sequence Number
+            payload = struct.pack("!BHQ", self.my_player_id, cell_id, ts)
+            header = build_header(MSG_EVENT, seq_num=curr_seq, payload=payload)
+            msg = header + payload
+
+            self.send_reliable(msg, curr_seq)
 
     # ==============================================================
     # === Drawing Logic ===
@@ -286,21 +311,37 @@ class GridClient:
                 header = parse_header(data)
                 payload = data[HEADER_SIZE:]
                 msg_type = header["msg_type"]
+                seq_in = header["seq_num"]
 
-                if msg_type == MSG_JOIN_RESPONSE:
+                # 1. Handle ACKs (Server received our Input)
+                if msg_type == MSG_GENERIC_ACK:
+                    acked_seq = parse_ack_payload(payload)
+                    with self.lock:
+                        if acked_seq in self.reliable_buffer:
+                            del self.reliable_buffer[acked_seq]
+
+                # 2. Handle Reliable Cell Updates
+                elif msg_type == MSG_CELL_UPDATE:
+                    self.send_message(build_ack_message(seq_in))
+                    r, c, owner = parse_cell_update_payload(payload)
+                    self.grid[r][c] = owner
+
+                    # 3. Handle Join (Make sure this is an ELIF)
+                elif msg_type == MSG_JOIN_RESPONSE:
                     self.handle_join(payload)
+
+                # 4. Handle Snapshots
                 elif msg_type == MSG_SNAPSHOT:
                     self.handle_snapshot(header, payload)
+
+                # 5. Handle Game Over
                 elif msg_type == MSG_GAME_OVER:
                     self.handle_game_over(payload)
 
-        except (BlockingIOError, ConnectionResetError, OSError):
-            # Silently ignore common socket errors (including WinError 10022)
+        except Exception:
             pass
-        except Exception as e:
-            print(f"[NETWORK] Loop error: {e}")
 
-        # Poll network frequently (10ms)
+        # Keep polling
         self.root.after(10, self.network_loop)
 
     def handle_join(self, payload):
@@ -367,6 +408,37 @@ class GridClient:
             pass
         self.root.destroy()
         sys.exit(0)
+
+    # ==============================================================
+    # === Reliability Logic (New) ===
+    # ==============================================================
+
+    def send_reliable(self, packet, seq_num):
+        """Send once and store for retry."""
+        self.send_message(packet)
+        with self.lock:
+            self.reliable_buffer[seq_num] = {
+                'packet': packet,
+                'last_sent': time.time(),
+                'retries': 0
+            }
+
+    def reliability_loop(self):
+        """Retries packets that haven't been ACKed."""
+        while True:
+            time.sleep(0.1)
+            now = time.time()
+            with self.lock:
+                for seq in list(self.reliable_buffer.keys()):
+                    data = self.reliable_buffer[seq]
+                    if now - data['last_sent'] > 0.1:  # Retry every 200ms
+                        if data['retries'] < 5:
+                            # print(f"[CLIENT] Resending Seq {seq}")
+                            self.send_message(data['packet'])
+                            data['last_sent'] = now
+                            data['retries'] += 1
+                        else:
+                            del self.reliable_buffer[seq]
 
 
 if __name__ == "__main__":

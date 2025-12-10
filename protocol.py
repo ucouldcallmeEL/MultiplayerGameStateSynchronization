@@ -27,7 +27,8 @@ MSG_EVENT = 0x03
 MSG_GAME_OVER = 0x04
 MSG_JOIN_RESPONSE = 0x05
 MSG_SNAPSHOT_ACK = 0x06
-
+MSG_GENERIC_ACK = 0x07  # Generic ACK type
+MSG_CELL_UPDATE = 0x08
 # Grid Dimensions
 GRID_SIZE = 8
 TOTAL_CELLS = GRID_SIZE * GRID_SIZE
@@ -48,7 +49,6 @@ def build_header(msg_type, snapshot_id=0, seq_num=0, payload=b""):
     timestamp = int(time.time() * 1000)
     payload_len = len(payload)
     checksum = zlib.crc32(payload) & 0xffffffff
-
     return struct.pack(
         HEADER_FORMAT,
         PROTOCOL_ID,
@@ -59,7 +59,7 @@ def build_header(msg_type, snapshot_id=0, seq_num=0, payload=b""):
         timestamp,
         payload_len,
         checksum
-    )
+    )   ##It calculates a CRC32 checksum for data integrity, gets the current timestamp, and packs them into binary using struct.pack.##
 
 def parse_header(data):
     """
@@ -174,6 +174,16 @@ def parse_snapshot_ack_payload(payload):
         "server_timestamp_ms": server_ts,
         "recv_time_ms": recv_ts,
     }
+# --- H. Cell Update (Server -> Client) ---
+def build_cell_update_message(seq_num, row, col, owner_id):
+    """Server tells clients a single cell has changed."""
+    # Payload: [Row(1B)] [Col(1B)] [OwnerID(1B)]
+    payload = struct.pack("!BBB", row, col, owner_id)
+    header = build_header(MSG_CELL_UPDATE, seq_num=seq_num, payload=payload)
+    return header + payload
+
+def parse_cell_update_payload(payload):
+    return struct.unpack("!BBB", payload)
 
 
 # --- F. Game Over (Server -> Client) ---
@@ -184,6 +194,21 @@ def build_game_over_message(winner_id):
     payload = struct.pack("!B", winner_id)
     header = build_header(MSG_GAME_OVER, payload=payload)
     return header + payload
+
+
+# --- G. Generic ACK (Reliability Layer) ---
+
+def build_ack_message(ack_seq_num):
+    """Acks a specific sequence number."""
+    # Payload: [AckedSeqNum (4B)]
+    payload = struct.pack("!I", ack_seq_num)
+    # We use snapshot_id=0, seq_num=0 for ACKs themselves to avoid loops
+    header = build_header(MSG_GENERIC_ACK, 0, 0, payload=payload)
+    return header + payload
+
+def parse_ack_payload(payload):
+    """Returns: acked_seq_num"""
+    return struct.unpack("!I", payload)[0]
 
 # ==============================================================
 # === 4. Utilities ===
