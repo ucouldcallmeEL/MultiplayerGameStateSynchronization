@@ -391,6 +391,11 @@ class GridClient:
     def handle_game_over(self, payload):
         winner_id = struct.unpack("!B", payload)[0]
         winner_name = PLAYER_NAMES.get(winner_id, f"Player {winner_id}")
+        
+        # Clear all pending events since game is over
+        self.pending_events.clear()
+        self.event_seq = 0
+        
         messagebox.showinfo("Game Over!", f"Winner is {winner_name}!")
 
         # Reset Logic

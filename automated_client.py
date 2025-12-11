@@ -260,9 +260,23 @@ class AutomatedClient:
         """Handle game over message."""
         winner_id = struct.unpack("!B", payload)[0]
         print(f"[CLIENT {self.client_id}] Game Over! Winner: Player {winner_id}", flush=True)
+        
+        # Clear all pending events since game is over
+        self.pending_events.clear()
+        self.event_seq = 0
+        
         # Reset grid
         self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
         self.last_known_grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        
+        # Reset player ID to allow rejoining
+        self.my_player_id = None
+        
+        # Rejoin the game automatically after a short delay
+        time.sleep(0.5)
+        if self.running:
+            print(f"[CLIENT {self.client_id}] Rejoining game...", flush=True)
+            self.send_message(build_init_message())
 
     def handle_event_ack(self, payload):
         try:
@@ -277,16 +291,16 @@ class AutomatedClient:
     
     def gameplay_loop(self):
         """Automatically send click events to play the game."""
-        # Wait until we've joined
-        while self.my_player_id is None and self.running:
-            time.sleep(0.1)
-        
-        if not self.running:
-            return
-        
-        print(f"[CLIENT {self.client_id}] Starting gameplay (sending clicks)...", flush=True)
+        print(f"[CLIENT {self.client_id}] Starting gameplay loop...", flush=True)
         
         while self.running:
+            # Wait until we've joined (handles rejoin after game over)
+            while self.my_player_id is None and self.running:
+                time.sleep(0.1)
+            
+            if not self.running:
+                break
+            
             # Pick a random empty cell or cell owned by another player
             available_cells = []
             for r in range(GRID_SIZE):

@@ -157,10 +157,11 @@ class GridServer:
         self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
         self.cell_timestamps.clear()
 
-        # Reset Lobby
+        # Reset Lobby and event tracking
         with self.state_lock:
             self.player_assignments = {1: None, 2: None, 3: None, 4: None}
             self.game_clients.clear()
+            self.last_event_ids.clear()  # Reset event IDs for next game
 
     # ============================================================
     # === Message Handlers ===
@@ -231,6 +232,7 @@ class GridServer:
             row = cell_id // GRID_SIZE
             col = cell_id % GRID_SIZE
             status = 0
+            winner = None
 
             if 0 <= row < GRID_SIZE and 0 <= col < GRID_SIZE:
                 prev_ts = self.cell_timestamps.get(cell_id)
@@ -242,22 +244,21 @@ class GridServer:
                         self.grid[row][col] = player_id
                         
                         winner = self.check_for_win_condition()
-                        if winner:
-                            self.broadcast_game_over(winner)
-            else:
-                status = 2
-                print(f"[WARN] Invalid cell_id {cell_id} from {addr}")
 
             # Update last seen event id on valid processing attempt
             if status == 0:
                 self.last_event_ids[player_id] = event_id
 
-        # Send ACK outside lock
+        # Send ACK BEFORE broadcasting game over to ensure client receives it
         ack = build_event_ack_message(event_id, int(time.time() * 1000), status=status)
         try:
             self.sock.sendto(ack, addr)
         except Exception as e:
             print(f"[NETWORK] Error sending EVENT_ACK to {addr}: {e}")
+        
+        # Broadcast game over AFTER sending ACK (outside lock)
+        if winner:
+            self.broadcast_game_over(winner)
 
     # ============================================================
     # === Thread Loops (Logic + Logging) ===
