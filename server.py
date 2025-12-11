@@ -33,6 +33,8 @@ from protocol import (
 SERVER_IP = "0.0.0.0"
 SERVER_PORT = 9999
 GAME_TICK_RATE = 1 / 40.0
+ACK_RETRY_DELAY_MS = 40
+ACK_RETRY_COUNT = 1
 
 
 class GridServer:
@@ -68,6 +70,19 @@ class GridServer:
             'server_timestamp_ms', 'client_id', 'snapshot_id', 
             'seq_num', 'cpu_percent', 'recv_time_ms', 'latency_ms'
         ])
+
+    def send_ack_with_retry(self, ack, addr, retries=ACK_RETRY_COUNT, delay_ms=ACK_RETRY_DELAY_MS):
+        """Send an ACK immediately and schedule limited retries to reduce loss impact."""
+        try:
+            self.sock.sendto(ack, addr)
+        except Exception as e:
+            print(f"[NETWORK] Error sending EVENT_ACK to {addr}: {e}")
+            return
+
+        if retries > 0:
+            timer = threading.Timer(delay_ms / 1000.0, lambda: self.send_ack_with_retry(ack, addr, retries - 1, delay_ms))
+            timer.daemon = True
+            timer.start()
 
     def start(self):
         """Starts the receive and broadcast threads."""
@@ -222,10 +237,7 @@ class GridServer:
             if last_seen is not None and event_id <= last_seen:
                 # Resend ACK for duplicates
                 ack = build_event_ack_message(event_id, int(time.time() * 1000), status=1)
-                try:
-                    self.sock.sendto(ack, addr)
-                except Exception as e:
-                    print(f"[NETWORK] Error resending EVENT_ACK to {addr}: {e}")
+                self.send_ack_with_retry(ack, addr)
                 return
 
             # Logic / Arbitration inside lock for consistency
@@ -251,10 +263,7 @@ class GridServer:
 
         # Send ACK BEFORE broadcasting game over to ensure client receives it
         ack = build_event_ack_message(event_id, int(time.time() * 1000), status=status)
-        try:
-            self.sock.sendto(ack, addr)
-        except Exception as e:
-            print(f"[NETWORK] Error sending EVENT_ACK to {addr}: {e}")
+        self.send_ack_with_retry(ack, addr)
         
         # Broadcast game over AFTER sending ACK (outside lock)
         if winner:
