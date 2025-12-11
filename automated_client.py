@@ -19,6 +19,7 @@ from protocol import (
     build_event_message,
     build_init_message,
     build_snapshot_ack_message,
+    parse_event_ack_payload,
     parse_header,
     parse_join_response_payload,
     parse_snapshot_payload,
@@ -26,6 +27,7 @@ from protocol import (
     MSG_SNAPSHOT,
     MSG_JOIN_RESPONSE,
     MSG_GAME_OVER,
+    MSG_EVENT_ACK,
     GRID_SIZE,
     TOTAL_CELLS
 )
@@ -48,6 +50,10 @@ class AutomatedClient:
         self.my_player_id = None
         self.latest_snapshot_id = 0
         self.running = True
+        self.event_seq = 0
+        self.pending_events = {}
+        self.retry_interval = 0.2  # seconds
+        self.max_event_retries = 10
         
         # === Networking ===
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -69,6 +75,7 @@ class AutomatedClient:
         # === Threading ===
         self.network_thread = None
         self.gameplay_thread = None
+        self.retry_thread = None
         
     def start(self, duration=TEST_DURATION):
         """Start the automated client."""
@@ -82,6 +89,10 @@ class AutomatedClient:
         self.network_thread = threading.Thread(target=self.network_loop, daemon=True)
         self.network_thread.start()
         
+        # Start retry thread
+        self.retry_thread = threading.Thread(target=self.retry_loop, daemon=True)
+        self.retry_thread.start()
+
         # Start gameplay thread (sends clicks)
         self.gameplay_thread = threading.Thread(target=self.gameplay_loop, daemon=True)
         self.gameplay_thread.start()
@@ -102,6 +113,36 @@ class AutomatedClient:
             self.sock.sendto(msg, self.server_addr)
         except Exception as e:
             print(f"[CLIENT {self.client_id}] Send failed: {e}", flush=True)
+
+    def enqueue_event(self, event_id, msg):
+        now_ms = int(time.time() * 1000)
+        self.pending_events[event_id] = {
+            "msg": msg,
+            "last_sent_ms": now_ms,
+            "retries": 0
+        }
+        self.send_message(msg)
+
+    def retry_pending_events(self):
+        now_ms = int(time.time() * 1000)
+        to_delete = []
+        for event_id, info in list(self.pending_events.items()):
+            if now_ms - info["last_sent_ms"] >= int(self.retry_interval * 1000):
+                if info["retries"] >= self.max_event_retries:
+                    print(f"[CLIENT {self.client_id}] Dropping event {event_id} after retries", flush=True)
+                    to_delete.append(event_id)
+                    continue
+                self.send_message(info["msg"])
+                info["retries"] += 1
+                info["last_sent_ms"] = now_ms
+
+        for event_id in to_delete:
+            self.pending_events.pop(event_id, None)
+
+    def retry_loop(self):
+        while self.running:
+            self.retry_pending_events()
+            time.sleep(self.retry_interval)
     
     def network_loop(self):
         """Continuously receive and process messages from server."""
@@ -122,6 +163,8 @@ class AutomatedClient:
                         self.handle_snapshot(header, payload)
                     elif msg_type == MSG_GAME_OVER:
                         self.handle_game_over(payload)
+                    elif msg_type == MSG_EVENT_ACK:
+                        self.handle_event_ack(payload)
                         
             except (BlockingIOError, ConnectionResetError, OSError):
                 time.sleep(0.01)
@@ -220,6 +263,17 @@ class AutomatedClient:
         # Reset grid
         self.grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
         self.last_known_grid = [[0 for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+
+    def handle_event_ack(self, payload):
+        try:
+            ack = parse_event_ack_payload(payload)
+            event_id = ack["event_id"]
+            status = ack.get("status", 0)
+            self.pending_events.pop(event_id, None)
+            if status != 0:
+                print(f"[CLIENT {self.client_id}] Event {event_id} acked with status {status}", flush=True)
+        except Exception as e:
+            print(f"[CLIENT {self.client_id}] Event ACK parse failed: {e}", flush=True)
     
     def gameplay_loop(self):
         """Automatically send click events to play the game."""
@@ -244,8 +298,10 @@ class AutomatedClient:
                 # Pick a random cell
                 cell_id = random.choice(available_cells)
                 ts = int(time.time() * 1000)
-                msg = build_event_message(self.my_player_id, cell_id, ts)
-                self.send_message(msg)
+                event_id = self.event_seq
+                self.event_seq += 1
+                msg = build_event_message(self.my_player_id, event_id, cell_id, ts)
+                self.enqueue_event(event_id, msg)
             
             time.sleep(CLICK_INTERVAL)
     

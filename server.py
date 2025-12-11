@@ -18,10 +18,12 @@ from protocol import (
     build_header,
     build_snapshot_message,
     build_join_response_message,
+    build_event_ack_message,
     MSG_EVENT,
     MSG_INIT,
     MSG_GAME_OVER,
     MSG_SNAPSHOT_ACK,
+    MSG_EVENT_ACK,
     HEADER_SIZE,
     GRID_SIZE,
     TOTAL_CELLS
@@ -54,6 +56,7 @@ class GridServer:
         self.player_assignments = {1: None, 2: None, 3: None, 4: None}
         self.all_clients = set()
         self.game_clients = set()
+        self.last_event_ids = {}
         
         # === Thread Safety ===
         self.state_lock = threading.Lock()
@@ -205,6 +208,7 @@ class GridServer:
                 return
 
             player_id = event["player_id"]
+            event_id = event["event_id"]
             cell_id = event["cell_id"]
             event_ts = header["timestamp"]
 
@@ -212,24 +216,48 @@ class GridServer:
                 print(f"[WARN] Addr {addr} tried to send event as P{player_id}. Mismatch.")
                 return
 
-        # Logic / Arbitration
-        row = cell_id // GRID_SIZE
-        col = cell_id % GRID_SIZE
+            # Duplicate detection (per player)
+            last_seen = self.last_event_ids.get(player_id)
+            if last_seen is not None and event_id <= last_seen:
+                # Resend ACK for duplicates
+                ack = build_event_ack_message(event_id, int(time.time() * 1000), status=1)
+                try:
+                    self.sock.sendto(ack, addr)
+                except Exception as e:
+                    print(f"[NETWORK] Error resending EVENT_ACK to {addr}: {e}")
+                return
 
-        if 0 <= row < GRID_SIZE and 0 <= col < GRID_SIZE:
-            prev_ts = self.cell_timestamps.get(cell_id)
+            # Logic / Arbitration inside lock for consistency
+            row = cell_id // GRID_SIZE
+            col = cell_id % GRID_SIZE
+            status = 0
 
-            if prev_ts is None or event_ts < prev_ts:
-                self.cell_timestamps[cell_id] = event_ts
+            if 0 <= row < GRID_SIZE and 0 <= col < GRID_SIZE:
+                prev_ts = self.cell_timestamps.get(cell_id)
 
-                if self.grid[row][col] != player_id:
-                    self.grid[row][col] = player_id
-                    
-                    winner = self.check_for_win_condition()
-                    if winner:
-                        self.broadcast_game_over(winner)
-        else:
-            print(f"[WARN] Invalid cell_id {cell_id} from {addr}")
+                if prev_ts is None or event_ts < prev_ts:
+                    self.cell_timestamps[cell_id] = event_ts
+
+                    if self.grid[row][col] != player_id:
+                        self.grid[row][col] = player_id
+                        
+                        winner = self.check_for_win_condition()
+                        if winner:
+                            self.broadcast_game_over(winner)
+            else:
+                status = 2
+                print(f"[WARN] Invalid cell_id {cell_id} from {addr}")
+
+            # Update last seen event id on valid processing attempt
+            if status == 0:
+                self.last_event_ids[player_id] = event_id
+
+        # Send ACK outside lock
+        ack = build_event_ack_message(event_id, int(time.time() * 1000), status=status)
+        try:
+            self.sock.sendto(ack, addr)
+        except Exception as e:
+            print(f"[NETWORK] Error sending EVENT_ACK to {addr}: {e}")
 
     # ============================================================
     # === Thread Loops (Logic + Logging) ===

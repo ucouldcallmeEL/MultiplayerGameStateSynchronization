@@ -27,6 +27,7 @@ MSG_EVENT = 0x03
 MSG_GAME_OVER = 0x04
 MSG_JOIN_RESPONSE = 0x05
 MSG_SNAPSHOT_ACK = 0x06
+MSG_EVENT_ACK = 0x07
 
 # Grid Dimensions
 GRID_SIZE = 8
@@ -118,18 +119,21 @@ def parse_join_response_payload(payload):
 
 # --- C. Game Event (Client -> Server) ---
 
-def build_event_message(player_id, cell_id, timestamp):
-    """Client attempts to claim a cell."""
-    # Payload: [PlayerID (1B)] [CellID (2B)] [Timestamp (8B)]
-    payload = struct.pack("!BHQ", player_id, cell_id, timestamp)
+def build_event_message(player_id, event_id, cell_id, timestamp):
+    """
+    Client attempts to claim a cell.
+    Payload: [PlayerID (1B)] [EventID (4B)] [CellID (2B)] [Timestamp (8B)]
+    """
+    payload = struct.pack("!BIHQ", player_id, event_id, cell_id, timestamp)
     header = build_header(MSG_EVENT, payload=payload)
     return header + payload
 
 def parse_event_payload(data):
-    """Returns: dict with player_id, cell_id, timestamp"""
-    player_id, cell_id, timestamp = struct.unpack("!BHQ", data)
+    """Returns: dict with player_id, event_id, cell_id, timestamp"""
+    player_id, event_id, cell_id, timestamp = struct.unpack("!BIHQ", data)
     return {
         "player_id": player_id,
+        "event_id": event_id,
         "cell_id": cell_id,
         "timestamp": timestamp
     }
@@ -165,6 +169,27 @@ def build_snapshot_ack_message(snapshot_id, server_ts, recv_ts):
     payload = struct.pack("!IQQ", snapshot_id, server_ts, recv_ts)
     header = build_header(MSG_SNAPSHOT_ACK, snapshot_id=snapshot_id, payload=payload)
     return header + payload
+
+
+# --- F. Event ACK (Server -> Client) ---
+
+def build_event_ack_message(event_id, server_ts, status=0):
+    """
+    Server acknowledges receipt/processing of an event.
+    Payload: [EventID (4B)] [ServerTime (8B)] [Status (1B)]
+    """
+    payload = struct.pack("!IQB", event_id, server_ts, status)
+    header = build_header(MSG_EVENT_ACK, payload=payload)
+    return header + payload
+
+def parse_event_ack_payload(payload):
+    """Returns: dict with event_id, server_timestamp_ms, status"""
+    event_id, server_ts, status = struct.unpack("!IQB", payload)
+    return {
+        "event_id": event_id,
+        "server_timestamp_ms": server_ts,
+        "status": status
+    }
 
 def parse_snapshot_ack_payload(payload):
     """Returns: dict with snapshot_id, server_timestamp_ms, recv_time_ms"""

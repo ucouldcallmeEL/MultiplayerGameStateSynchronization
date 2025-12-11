@@ -11,6 +11,7 @@ from protocol import (
     build_event_message,
     build_init_message,
     build_snapshot_ack_message,
+    parse_event_ack_payload,
     parse_header,
     parse_join_response_payload,
     parse_snapshot_payload,
@@ -18,6 +19,7 @@ from protocol import (
     MSG_SNAPSHOT,
     MSG_JOIN_RESPONSE,
     MSG_GAME_OVER,
+    MSG_EVENT_ACK,
     GRID_SIZE
 )
 
@@ -99,6 +101,12 @@ class GridClient:
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow(['snapshot_id', 'server_timestamp_ms', 'recv_time_ms', 'latency_ms'])
 
+        # === Event Tracking ===
+        self.event_seq = 0
+        self.pending_events = {}
+        self.retry_interval_ms = 150
+        self.max_event_retries = 10
+
         # === UI Setup ===
         self.menu_frame = tk.Frame(root)
         self.game_frame = tk.Frame(root)
@@ -116,6 +124,9 @@ class GridClient:
 
         # 2. Render Loop: Handles smoothing/interpolation (Visuals)
         self.root.after(16, self.render_loop)
+
+        # 3. Event retry loop
+        self.root.after(self.retry_interval_ms, self.event_retry_loop)
 
         # Auto-join support
         if '--auto' in sys.argv or os.getenv('AUTO_JOIN', '').lower() in ('1', 'true', 'yes'):
@@ -198,8 +209,10 @@ class GridClient:
         if 0 <= r < GRID_SIZE and 0 <= c < GRID_SIZE:
             cell_id = r * GRID_SIZE + c
             ts = int(time.time() * 1000)
-            msg = build_event_message(self.my_player_id, cell_id, ts)
-            self.send_message(msg)
+            event_id = self.event_seq
+            self.event_seq += 1
+            msg = build_event_message(self.my_player_id, event_id, cell_id, ts)
+            self.enqueue_event(event_id, msg)
 
     # ==============================================================
     # === Drawing Logic ===
@@ -277,6 +290,34 @@ class GridClient:
         except Exception as e:
             print(f"[ERROR] Send failed: {e}")
 
+    def enqueue_event(self, event_id, msg):
+        now_ms = int(time.time() * 1000)
+        self.pending_events[event_id] = {
+            "msg": msg,
+            "last_sent_ms": now_ms,
+            "retries": 0
+        }
+        self.send_message(msg)
+
+    def event_retry_loop(self):
+        now_ms = int(time.time() * 1000)
+        to_delete = []
+        for event_id, info in list(self.pending_events.items()):
+            if now_ms - info["last_sent_ms"] >= self.retry_interval_ms:
+                if info["retries"] >= self.max_event_retries:
+                    print(f"[WARN] Dropping event {event_id} after retries")
+                    to_delete.append(event_id)
+                    continue
+
+                self.send_message(info["msg"])
+                info["retries"] += 1
+                info["last_sent_ms"] = now_ms
+
+        for event_id in to_delete:
+            self.pending_events.pop(event_id, None)
+
+        self.root.after(self.retry_interval_ms, self.event_retry_loop)
+
     def network_loop(self):
         try:
             while True:
@@ -293,6 +334,8 @@ class GridClient:
                     self.handle_snapshot(header, payload)
                 elif msg_type == MSG_GAME_OVER:
                     self.handle_game_over(payload)
+                elif msg_type == MSG_EVENT_ACK:
+                    self.handle_event_ack(payload)
 
         except (BlockingIOError, ConnectionResetError, OSError):
             # Silently ignore common socket errors (including WinError 10022)
@@ -355,6 +398,17 @@ class GridClient:
         self.visual_grid = [["#FFFFFF"] * GRID_SIZE for _ in range(GRID_SIZE)]
         self.clear_all_cells()  # Clear canvas visually
         self.show_menu()
+
+    def handle_event_ack(self, payload):
+        try:
+            ack = parse_event_ack_payload(payload)
+            event_id = ack["event_id"]
+            status = ack.get("status", 0)
+            self.pending_events.pop(event_id, None)
+            if status != 0:
+                print(f"[WARN] Event {event_id} acked with status {status}")
+        except Exception as e:
+            print(f"[ERROR] Event ACK parse failed: {e}")
 
     # ==============================================================
     # === System & Cleanup ===
