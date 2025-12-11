@@ -226,7 +226,7 @@ class GridServer:
             player_id = event["player_id"]
             event_id = event["event_id"]
             cell_id = event["cell_id"]
-            event_ts = header["timestamp"]
+            event_ts = int(time.time() * 1000)
 
             if self.player_assignments.get(player_id) != addr:
                 print(f"[WARN] Addr {addr} tried to send event as P{player_id}. Mismatch.")
