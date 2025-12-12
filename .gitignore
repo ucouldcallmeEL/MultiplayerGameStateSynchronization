@@ -8,5 +8,3 @@ test_verification/
 md_files/
 *.pyc
 *.csv
-.idea/
-__pycache__/

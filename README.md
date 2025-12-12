@@ -13,7 +13,8 @@ A real-time multiplayer game where up to 4 players compete to claim cells on an 
 7. [Technical Details](#technical-details)
 8. [Running Automated Tests](#running-automated-tests)
 9. [Verifying Test Results](#verifying-test-results)
-10. [Troubleshooting](#troubleshooting)
+10. [Phase 2 Experiments](#phase-2-experiments)
+11. [Troubleshooting](#troubleshooting)
 
 ## Game Overview
 
@@ -209,6 +210,140 @@ The test script automatically calculates and displays:
 - Average CPU usage
 - PASS/FAIL status for each criterion
 
+## Phase 2 Experiments
+
+The project includes a comprehensive test suite (`run_experiments.py`) that validates game performance under various network conditions using Linux traffic control (`tc netem`).
+
+### Running Phase 2 Experiments
+
+```bash
+sudo  ./run_all_tests.sh
+```
+
+**Note:** Root privileges are required for network emulation.
+
+### Test Scenarios
+
+The experiment runner automatically executes the following scenarios:
+
+#### 1. Baseline (No Impairment)
+- **Description:** Ideal network conditions with no packet loss or delay
+- **Purpose:** Establish performance baseline for comparison
+- **Acceptance Criteria:**
+  - ≥20 updates/sec per client
+  - ≤50ms average end-to-end latency
+  - <60% average server CPU utilization
+
+#### 2. Loss 2% (LAN-like)
+- **Description:** 2% packet loss simulating local area network conditions
+- **Network Command:** `sudo tc qdisc add dev lo root netem loss 2%`
+- **Purpose:** Validate interpolation and smooth gameplay under minor packet loss
+- **Acceptance Criteria:**
+  - Mean position error ≤0.5 units
+  - 95th percentile position error ≤1.5 units
+  - Graceful interpolation implemented
+
+#### 3. Loss 5% (WAN-like)
+- **Description:** 5% packet loss simulating wide area network conditions
+- **Network Command:** `sudo tc qdisc add dev lo root netem loss 5%`
+- **Purpose:** Test critical event reliability under moderate packet loss
+- **Acceptance Criteria:**
+  - Critical events reliability ≥99%
+  - Critical events delivered within 200ms
+  - System remains stable
+
+#### 4. Delay 100ms (WAN Delay)
+- **Description:** 100ms network delay simulating long-distance connections
+- **Network Command:** `sudo tc qdisc add dev lo root netem delay 100ms`
+- **Purpose:** Validate functionality and reliability under high latency
+- **Acceptance Criteria:**
+  - Game remains functional
+  - Clients continue receiving updates reliably
+
+### Experiment Output
+
+Each test scenario generates a timestamped directory in `test_results/` containing:
+
+**Evidence Files:**
+- `trace.pcap` - Complete packet capture for network analysis
+- `server.log` - Server stdout/stderr logs
+- `client_1.log` through `client_4.log` - Individual client logs
+- `netem_commands.txt` - Network emulation commands used
+- `evidence_summary.txt` - Overview of collected evidence
+
+**Metrics Files:**
+- `metrics.csv` - Server-side performance metrics
+  - `server_timestamp_ms` - When snapshot was sent
+  - `client_id` - Target client ID
+  - `seq_num` - Sequence number
+  - `cpu_percent` - Server CPU usage at send time
+- `client_*_metrics.csv` - Client-side metrics for each client
+  - `snapshot_id` - Snapshot identifier
+  - `server_timestamp_ms` - Server timestamp from header
+  - `recv_time_ms` - When client received the snapshot
+  - `latency_ms` - Calculated end-to-end latency
+  - `position_error` - Position error for interpolation validation (where applicable)
+
+**Analysis Files:**
+- `analysis_results.txt` - Detailed acceptance criteria validation with pass/fail status
+
+### Experiment Configuration
+
+Key parameters in `run_experiments.py`:
+
+```python
+TEST_DURATION = 60        # Seconds per scenario
+NUM_CLIENTS = 4          # Number of automated clients
+INTERFACE = "lo"         # Network interface (use 'lo' for localhost)
+SERVER_PORT = 9999       # Server port
+```
+
+### Understanding Results
+
+After running experiments, check the final summary:
+
+```
+Final Test Summary
+==================
+Baseline (no impairment): ✅ PASSED
+Loss 2% (LAN-like): ✅ PASSED
+Loss 5% (WAN-like): ✅ PASSED
+Delay 100ms (WAN delay): ✅ PASSED
+```
+
+Each scenario directory contains detailed metrics and analysis. Use the `.pcap` files with Wireshark or `tcpdump` for deep network analysis:
+
+```bash
+# View packet capture summary
+tcpdump -r test_results/baseline_*/trace.pcap | head -20
+
+# Analyze with Wireshark (GUI)
+wireshark test_results/baseline_*/trace.pcap
+```
+
+### Requirements for Phase 2 Tests
+
+- **Operating System:** Linux (required for `tc netem`)
+- **Root Access:** Sudo privileges for network emulation
+- **Tools:**
+  - `tc` (traffic control) - part of `iproute2` package
+  - `tcpdump` - packet capture utility
+  - `psutil` (Python package) - system monitoring
+
+Install required tools:
+```bash
+sudo apt-get install iproute2 tcpdump
+pip3 install psutil
+```
+
+### Automated Clients
+
+The experiments use `automated_client.py` instead of the GUI client. These automated clients:
+- Connect to the server automatically
+- Send periodic cell claim events to simulate real gameplay
+- Collect detailed metrics (latency, position errors, etc.)
+- Run headless (no GUI) for reproducible testing
+
 ## Troubleshooting
 
 **Server won't start:**
@@ -238,3 +373,11 @@ The test script automatically calculates and displays:
 - Verify clients are actually joining (check server logs)
 - Ensure clients are receiving snapshots (check client logs)
 - Check that the test ran for the full duration
+
+**Phase 2 experiment errors:**
+- Must run with `sudo` for network emulation
+- Verify `tc` command is available: `which tc`
+- Check that `lo` interface exists: `ip link show lo`
+- Ensure no existing `tc` rules conflict: `sudo tc qdisc del dev lo root`
+- Review netem_commands.txt in test output for applied rules
+
