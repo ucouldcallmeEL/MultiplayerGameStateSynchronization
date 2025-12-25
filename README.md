@@ -381,3 +381,6 @@ The experiments use `automated_client.py` instead of the GUI client. These autom
 - Ensure no existing `tc` rules conflict: `sudo tc qdisc del dev lo root`
 - Review netem_commands.txt in test output for applied rules
 
+
+Demo Link: [Watch GridClash in Action](https://1drv.ms/v/c/a1fdbc4b4f6599b5/IQB3c8fO9n8zRIXCDWzx31U7AYgGtRJjScKNmIpj3uxGM-s?e=rthvNP)
+
